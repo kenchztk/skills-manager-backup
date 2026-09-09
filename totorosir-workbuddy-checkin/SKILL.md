@@ -1,0 +1,109 @@
+---
+name: totorosir-workbuddy-checkin
+display_name: WorkBuddy签到助手
+display_name_en: WorkBuddy Check-in Assistant
+description: WorkBuddy签到助手（WorkBuddy「Buddy 加油站」每日签到自动化 Skill，接口直签，无需点击 GUI，跨平台支持 Windows / macOS / Linux）。当用户说"每天自动签到 WorkBuddy / 每日签到 / 自动领 Buddy 加油站积分 / 自动领 100 积分 / 设置 WorkBuddy 每日签到 / WorkBuddy 打卡 / 自动打卡 WorkBuddy / 帮我签到一次 / 现在签个到 / 检查签到环境"时使用。原理是读取本机已登录 WorkBuddy 的登录态 accessToken，直接调用官方签到接口完成领取；支持桌面通知与可选微信推送。
+description_zh: 读取本机 WorkBuddy 登录态，直接调用官方接口完成「Buddy 加油站」每日签到（无需点击 GUI），支持桌面通知与可选微信推送，可设置每日 09:00 自动签到。
+description_en: Auto check-in to WorkBuddy Buddy Station using the local auth token via the official API (no GUI clicks). Cross-platform, with desktop notification and optional WeChat push; supports a daily 09:00 automation.
+category: 自动化
+version: 2.0.0
+author: totorosir
+---
+
+# WorkBuddy签到助手（每日自动签到 · 接口直签）
+
+WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token 的 HTTP 接口请求，**不需要**模拟点击左下角「个人信息 → Buddy 加油站 → 签到」这一套 GUI 流程（自动化代理也没有点击桌面 UI 的能力）。
+
+本 Skill 自带脚本 `scripts/workbuddy_checkin.py`，仅用 Python 标准库（urllib/json/os/socket/subprocess），零第三方依赖。
+
+> 面向用户的完整说明（快速开始 / 桌面通知 / 微信配置 / 环境自检 / FAQ / 反模式 / 排错）见 `README.md`。
+> 接口规范、登录态格式、字段与错误码见 `@references/api-spec.md`。
+> 自动化提示词、命令示例与微信配置示例见 `@references/examples.md`。
+> 本文件只保留 Skill 元数据与代理执行所需关键信息，避免内容重复维护。
+
+## 关键事实（已实测验证，Windows / macOS / Linux，WorkBuddy v5.3.x）
+
+- **登录态文件（明文 JSON）**：
+  `C:\Users\<user>\AppData\Local\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`
+  （旧版可能在 `%APPDATA%` 同路径下；v5.3.8+ 为明文）
+- 文件内 `auth.accessToken`（JWT，`auth.tokenType=Bearer`）、`auth.domain`（实测值 `www.codebuddy.cn`）。
+- **接口域名**：以登录态里的 `auth.domain` 为准（实测为 `www.codebuddy.cn`）。注意：网上部分文章写 `copilot.tencent.com` 会 404，应以本机 `domain` 字段为准。
+- **状态查询（只读）**：`POST https://<domain>/v2/billing/meter/checkin-activity-status`
+  返回 `{"code":0,"data":{"today_checked_in":true/false,"streak_days":N,"daily_credit":100,...}}`（data 中可能含 total_credit / balance 等余额字段，脚本会自动提取并展示）
+- **领取签到**：`POST https://<domain>/v2/billing/meter/daily-checkin`
+  - 成功：HTTP 200，`code:0`，返回 `credit` / `streak_days`（领取 100 积分）。
+  - 已签到：HTTP 400，`code:10001`，`msg:"今天已签到，请明天再来"` —— **幂等，不会重复发**。
+
+完整字段、路径与错误码对照见 `@references/api-spec.md`。
+
+## 自带脚本（`scripts/workbuddy_checkin.py`）
+
+仅用 Python 标准库，零第三方依赖。核心逻辑：
+1. 在 `LOCALAPPDATA` / `APPDATA` / `~/Library/Application Support` / `~/.config`（及 `~/.workbuddy/auth` 兜底）定位 `workbuddy-desktop.info`，只读取出 `accessToken` 与 `domain`。
+2. 调 `checkin-activity-status`：若 `data.today_checked_in==true` → 直接 `skip_already_signed` 退出（不发领取请求）。
+3. 否则调 `daily-checkin` 领取；响应 `code==10001` 或含"已签到" → 视为已签安全跳过；HTTP 200 且 `code==0` → 领取成功。
+4. 非 2xx 也解析响应体（避免把"已签到 400"误判为异常）。
+5. **输出 JSON 结果，全程不打印任何真实 token**（仅脱敏 `eyJhbG...xxxx`）。退出码：成功 0 / 失败 1。
+
+支持参数：
+- （无参数）查询今日状态 + 必要时领取
+- `--check-only` 仅查询状态（只读，不领取）
+- `--no-notify` 跳过全部推送与桌面通知（调试用）
+- `--diagnose` 环境自检（Python/登录态/网络/桌面会话/微信配置，只读）
+- `--init-config` 生成 `notify_config.json.example` 模板
+- `--version` / `--help`
+
+能力要点：
+- **桌面通知（默认开启）**：每次执行后弹系统级 toast 展示结果与余额；受 `--no-notify` 抑制；无桌面会话时自动跳过，不影响签到。
+- **失败微信提醒（可选）**：`status!=ok` 时读取本地 `~/.workbuddy/scripts/notify_config.json`（若存在）推送失败提醒；配置缺失或通道异常则静默跳过。
+- **成功微信播报（可选，默认关闭）**：`notify_config.json` 中 `success_notify: true` 时，签到成功也会推送一条播报；默认 `false` 保持静默无打扰。
+- **积分余额展示**：从状态/领取响应中尽力提取「积分余额」（total_credit / balance / points_balance 等），写入结果 `balance` 字段并展示；接口未返回则自动跳过。
+- **环境自检（--diagnose）**：只读自检上述五项，输出 JSON 报告，便于首次安装后确认环境就绪。
+
+## 调用本 Skill 时的搭建流程（照做即可）
+
+当用户要求搭建/修复自动签到，或换机/重装后重建时：
+
+1. **定位登录态并校验 token**
+   - 找到 `workbuddy-desktop.info`，确认 `auth.accessToken` 存在且未过期（`expiresAt` 字段）。
+   - 若文件不存在或 token 失效：如实告知用户"请先在 WorkBuddy 客户端登录"，**不要**伪造或猜测。
+
+2. **落位脚本到稳定路径**
+   - 把本 Skill 目录里的 `scripts/workbuddy_checkin.py` 复制到 `~/.workbuddy/scripts/workbuddy_checkin.py`。
+   - 用 Python 跑一次 `--check-only` 验证接口通、token 有效（应返回 `status_http:200`、`today_signed` 字段）。
+   - 可顺带跑一次 `--diagnose`，把自检报告读给用户，确认环境就绪。
+
+3. **验证领取分支（可选但建议）**
+   - 跑一次不带参数的完整脚本：若当天已签 → 返回 `skip_already_signed`；若未签 → 返回 `clicked` 并提示用户去 Buddy 加油站界面核对 +100。
+
+4. **创建 WorkBuddy 自带自动化**（不要用 crontab / launchd / 第三方定时器）
+   - 用 `automation_update`（mode=create）创建 recurring 自动化：
+     - name：`WorkBuddy签到助手 · 每日自动签到`
+     - rrule：`FREQ=DAILY;BYHOUR=9;BYMINUTE=0`
+     - status：`ACTIVE`
+   - 自动化提示词（让代理用 Bash 跑脚本并脱敏汇报）见 `@references/examples.md`。
+
+5. **向用户汇报**：自动化名称、执行时间、脚本路径；并提醒"若当天已手动签到会自动跳过；首个真实自动领取通常在次日 09:00，请在 Buddy 加油站核对积分 +100"。
+
+## 微信提醒（可选）
+
+签到失败 / 成功时（按配置），脚本会自动向微信推送提醒。推送**密钥只存在于本地 `notify_config.json`，永不进入脚本或技能目录**。配置格式与获取方式见 `@references/examples.md`。行为约定：
+- `enabled: false` 或配置文件不存在 → 不推送，仅输出 JSON 失败结果（退出码 1）。
+- 失败推送：仅在 `status!=ok` 时推送。
+- 成功播报：仅当 `success_notify: true` 时推送；`--check-only` 纯查询不会推送。
+- 推送失败仅记录到结果 `detail.notify` / `detail.notify_success`，**不影响签到退出码**。
+
+## 安全约束（务必遵守）
+
+- 只读登录态文件，绝不修改、绝不删除、绝不外传 `accessToken` / `refreshToken`。
+- 任何输出（终端、日志、汇报）都不得包含真实 token；脚本已脱敏，代理也不要回显凭据。
+- 不安装 Electron；本 Skill 自身只用 WorkBuddy 自带自动化完成每日签到。
+- 如需**系统级定时任务**（Windows 计划任务 / macOS launchd / Linux crontab，脱离 WorkBuddy 也能跑），请使用独立的「WorkBuddy 自动签到分享包」，与本 Skill 互不冲突、可并存。
+- 不要在网页版尝试签到（网页版无签到入口，仅 PC 客户端专属）。
+
+## 排错要点（详见 `README.md` 排错速查）
+
+- `code=10001` 是今日已签，非错误。
+- 404 一定是用了错误域名（脚本自动用本机 `auth.domain`）。
+- 自动化没跑先查开机 / 客户端退出 / 联网。
+- 桌面通知不弹通常是无桌面会话（锁屏/无 GUI），属预期，stdout 与 checkin.log 仍有完整记录。

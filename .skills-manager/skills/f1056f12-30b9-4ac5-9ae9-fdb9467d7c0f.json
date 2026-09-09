@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "f1056f12-30b9-4ac5-9ae9-fdb9467d7c0f",
+  "path": "better-layout",
+  "path_key": "better-layout",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "skillssh",
+    "ref": "jakubkrehel/skills/better-layout",
+    "subpath": "skills/better-layout",
+    "branch": null
+  }
+}

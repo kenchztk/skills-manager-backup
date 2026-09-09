@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "6b9f0f06-d1bf-412c-9184-86935eeafb4f",
+  "path": "yichen-wechat-local-vault",
+  "path_key": "yichen-wechat-local-vault",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "import",
+    "ref": null,
+    "subpath": null,
+    "branch": null
+  }
+}

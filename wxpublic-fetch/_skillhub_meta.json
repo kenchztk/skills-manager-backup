@@ -1,0 +1,10 @@
+{
+  "slug": "wxpublic-fetch",
+  "name": "公众号内容提取",
+  "version": "1.0.9",
+  "installedAt": 1787894620205,
+  "source": "skillhub",
+  "iconSource": "https://cloudcache.tencent-cloud.com/qcloud/ui/static/other_external_resource/0c9b068f-f22e-44e2-96fe-d2b6f5b43b07.png",
+  "iconLocalPath": "/Users/kench/.workbuddy/skills/wxpublic-fetch__skillhub/_icon.png",
+  "iconDownloadedFrom": "https://cloudcache.tencent-cloud.com/qcloud/ui/static/other_external_resource/0c9b068f-f22e-44e2-96fe-d2b6f5b43b07.png"
+}

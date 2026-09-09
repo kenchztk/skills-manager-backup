@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "e5bdb5fa-bef2-4582-9c04-cd4bf0c29a0d",
+  "path": "wxpublic-fetch",
+  "path_key": "wxpublic-fetch",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "import",
+    "ref": null,
+    "subpath": null,
+    "branch": null
+  }
+}

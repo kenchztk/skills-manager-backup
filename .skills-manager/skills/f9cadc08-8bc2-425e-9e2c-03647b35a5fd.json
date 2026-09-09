@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "f9cadc08-8bc2-425e-9e2c-03647b35a5fd",
+  "path": "totorosir-workbuddy-checkin",
+  "path_key": "totorosir-workbuddy-checkin",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "import",
+    "ref": null,
+    "subpath": null,
+    "branch": null
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "success_notify": false,
+  "wecom_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=替换为你的群机器人KEY",
+  "pushplus_token": "替换为你的PushPlus_token（个人微信推送）",
+  "bark_url": "https://api.day.app/替换为你的Bark_KEY/"
+}

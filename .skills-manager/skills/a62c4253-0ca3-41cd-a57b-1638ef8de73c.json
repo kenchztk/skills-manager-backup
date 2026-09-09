@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "a62c4253-0ca3-41cd-a57b-1638ef8de73c",
+  "path": "wx-article-md-fill",
+  "path_key": "wx-article-md-fill",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "import",
+    "ref": null,
+    "subpath": null,
+    "branch": null
+  }
+}

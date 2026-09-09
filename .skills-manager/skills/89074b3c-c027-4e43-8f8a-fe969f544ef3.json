@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "89074b3c-c027-4e43-8f8a-fe969f544ef3",
+  "path": "novaai-x-video-summary",
+  "path_key": "novaai-x-video-summary",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "import",
+    "ref": null,
+    "subpath": null,
+    "branch": null
+  }
+}

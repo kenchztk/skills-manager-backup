@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "d088a703-ac68-4c68-91bf-413a57e08cc1",
+  "path": "agently-mail",
+  "path_key": "agently-mail",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "import",
+    "ref": null,
+    "subpath": null,
+    "branch": null
+  }
+}

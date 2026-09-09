@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "27658264-4f93-4c0a-8cd5-90457e501905",
+  "path": "interface-review",
+  "path_key": "interface-review",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "skillssh",
+    "ref": "jakubkrehel/skills/interface-review",
+    "subpath": "skills/interface-review",
+    "branch": null
+  }
+}
