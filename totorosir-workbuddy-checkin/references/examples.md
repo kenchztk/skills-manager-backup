@@ -1,6 +1,6 @@
 # 示例与配置（WorkBuddy签到助手）
 
-本文件供 Skill 执行与用户配置参考，包含：自动化提示词、命令示例、微信推送配置、安装/卸载说明。
+本文件供 Skill 执行与用户配置参考，包含：自动化提示词、命令示例、多渠道消息推送配置、安装/卸载说明。
 
 ---
 
@@ -29,13 +29,15 @@ python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py"
 - auto_log 逐条列出本次实际动作（领取 / 派遣 / 跳过原因），照实转述。
 
 约束：
-1. 严禁在任意输出中打印 token / accessToken / refreshToken。
+1. 严禁在任意输出中打印 token / accessToken / refreshToken，也不要回显任何推送凭据（webhook / smtp_pass / pushplus_token / bot_token）。
 2. 不要无限重试；脚本内部最多重试 1 次即可。
-3. 若命令执行失败（status=error），脚本会自动向微信推送失败提醒（前提是已配置 notify_config.json）；你仍需在对话中如实报告失败原因，并提示检查 WorkBuddy 是否已登录、电脑是否联网、是否在 09:00 前后保持开机且客户端未退出。
-4. 若微信提醒未收到（如未配置 webhook），不要谎报"已通知"，直接说明"未配置微信提醒，请检查 notify_config.json"。
+3. 若命令执行失败（status=error），脚本会自动向已配置渠道推送失败提醒（前提是已配置 notify_config.json）；你仍需在对话中如实报告失败原因，并提示检查 WorkBuddy 是否已登录、电脑是否联网、是否在 09:00 前后保持开机且客户端未退出。
+4. 若推送未配置或未收到，不要谎报"已通知"。可先跑 `--diagnose` 看 `notify_config.ready`，并如实转述：例如"未配置任何推送渠道，请检查 notify_config.json"或"渠道 X 未配置（unconfigured）"。
+5. 推送失败不得影响签到结论与退出码；汇报时把推送状态与签到状态分开说。
+6. 不要擅自为推送渠道加付费项（如短信 sms），也不要自动加 `--confirm-paid`。
 ```
 
-> 把上面的 `<user>` 替换为本机实际用户名。推荐 rrule：`FREQ=DAILY;BYHOUR=9;BYMINUTE=0`（每天 09:00）。
+> 路径统一用 `%USERPROFILE%`（Windows）/ `~`（macOS、Linux），无需替换用户名。推荐 rrule：`FREQ=DAILY;BYHOUR=9;BYMINUTE=0`（每天 09:00）。
 
 ---
 
@@ -53,6 +55,13 @@ python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --check-only     
 python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" travel                 # 只查旅行状态（只读）
 python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" travel --travel-auto    # 只跑旅行闭环（不签到）
 python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --location 3            # 指定派去健身房
+
+# --- 消息推送 ---
+python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --push-channels dingtalk,email  # 本次仅推指定渠道
+python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --confirm-paid                  # 放行付费渠道（短信）
+python "%USERPROFILE%/.workbuddy/scripts/push_message.py" --title "测试" --content "hello"     # 独立测试（发全部已配置渠道）
+python "%USERPROFILE%/.workbuddy/scripts/push_message.py" --title T --content C --channels system  # 只发系统通知（零配置、离线）
+python "%USERPROFILE%/.workbuddy/scripts/push_message.py" --ready                              # 只列出已就绪渠道（只读，不发送）
 
 # --- 其他 ---
 python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --no-notify      # 跳过推送与桌面通知（调试）
@@ -109,13 +118,80 @@ python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --version        
 }
 ```
 
+`--diagnose`（只读自检，节选）：
+
+```json
+{
+  "version": "3.0.0",
+  "python": { "version": "3.13.14", "ok": true },
+  "auth": { "found": true, "token_present": true, "domain": "www.codebuddy.cn", "expired": false },
+  "network": { "dns_ok": true, "host": "www.codebuddy.cn" },
+  "desktop": { "session": "yes", "note": "存在桌面会话，系统通知可正常弹出" },
+  "notify_config": {
+    "present": true,
+    "enabled": true,
+    "success_notify": true,
+    "ready": ["wechat"],
+    "unconfigured": ["dingtalk", "feishu", "wecom", "email", "sms", "qq", "slack", "telegram", "bark", "webhook"]
+  }
+}
+```
+
+推送（`push_message.py` 独立运行，节选；本机仅配了 PushPlus，故 `ready=[wechat]`）：
+
+```json
+// --channels system（零配置，离线可用）
+{ "ok": true,
+  "results": [{ "channel": "system", "status": "success",
+                "detail": "通知中心文件:written; 桌面弹窗:已尝试(尽力)" }] }
+
+// --channels dingtalk,system（未配置渠道标 unconfigured，其余照发）
+{ "ok": false,
+  "results": [
+    { "channel": "dingtalk", "status": "unconfigured", "detail": "渠道 dingtalk 未配置" },
+    { "channel": "system",   "status": "success", "detail": "通知中心文件:written; 桌面弹窗:已尝试(尽力)" }] }
+
+// --channels sms（未配置 → unconfigured；若已配置但缺 --confirm-paid → skipped）
+{ "ok": false,
+  "results": [{ "channel": "sms", "status": "unconfigured", "detail": "渠道 sms 未配置" }] }
+```
+
 ---
 
-## 3. 微信推送配置
+## 3. 消息推送配置（可选，12 渠道）
 
-### 3.1 配置文件格式
+### 3.1 配置文件路径
 
-路径：`%USERPROFILE%\.workbuddy\scripts\notify_config.json`（Windows；macOS / Linux 为 `~/.workbuddy/scripts/notify_config.json`）。不存在则不推送。
+`%USERPROFILE%\.workbuddy\scripts\notify_config.json`（Windows；macOS / Linux 为 `~/.workbuddy/scripts/notify_config.json`）。
+也支持环境变量 `WORKBUDDY_CHECKIN_PUSH_CONFIG` 指向自定义路径。**文件不存在 → 完全不推送，行为与未引入推送功能时一致。**
+
+### 3.2 写法一：新结构 `channels`（推荐，渠道最全）
+
+```json
+{
+  "enabled": true,
+  "success_notify": false,
+  "channels": {
+    "dingtalk": { "webhook": "https://oapi.dingtalk.com/robot/send?access_token=你的TOKEN", "secret": "加签密钥(可选)" },
+    "feishu":   { "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/你的HOOK" },
+    "wecom":    { "webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=你的KEY" },
+    "wechat":   { "pushplus_token": "你的PushPlus_token" },
+    "email": {
+      "smtp_host": "smtp.qq.com", "smtp_port": 465, "smtp_mode": "ssl",
+      "smtp_user": "你的邮箱@qq.com", "smtp_pass": "邮箱授权码",
+      "from": "你的邮箱@qq.com", "to": "接收邮箱@qq.com"
+    },
+    "sms":      { "url": "https://你的短信服务/send", "payload_template": "{\"content\":\"{{content}}\"}" },
+    "qq":       { "url": "https://你的QQ推送网关/send" },
+    "slack":    { "webhook_url": "https://hooks.slack.com/services/你的WEBHOOK" },
+    "telegram": { "bot_token": "你的BOT_TOKEN", "chat_id": "-100123456" },
+    "bark":     { "server": "https://api.day.app", "device_key": "你的KEY" },
+    "webhook":  { "url": "https://你的服务/hook", "payload_template": "{\"title\":\"{{title}}\",\"text\":\"{{content}}\"}" }
+  }
+}
+```
+
+### 3.3 写法二：旧结构扁平字段（向后兼容，仅微信三通道）
 
 ```json
 {
@@ -127,18 +203,44 @@ python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --version        
 }
 ```
 
-- 三个通道按优先级启用，填了哪个用哪个，可同时填多个。
-- `success_notify: true` 时签到成功也推播报；默认 `false` 仅失败时提醒。
-- 不想手写？运行 `python workbuddy_checkin.py --init-config` 自动生成 `notify_config.json.example` 模板（也可参考技能包内 `templates/notify_config.json.example`）。
+两种写法**可混用**：`normalize_channels` 会先取新结构，再用旧字段补齐缺失的微信通道；`bark_url` 会自动拆成 `bark.server` + `bark.device_key`。
+
+### 3.4 字段说明
+
+| 字段 | 作用 |
+|---|---|
+| `enabled` | 总开关；`false` 时不推送（显式 `--push-channels` 可覆盖） |
+| `success_notify` | `true` 时签到成功也推播报；默认 `false` 仅失败时提醒 |
+| `channels` | 新结构渠道映射，按需只填你用得到的渠道 |
+| `wecom_webhook` / `pushplus_token` / `bark_url` | 旧结构兼容字段，效果等同新结构里的 `wecom` / `wechat` / `bark` |
+
+- 未配置的渠道**不会报错**，只在结果里标 `unconfigured`。
+- 不想手写？运行 `python workbuddy_checkin.py --init-config` 生成双结构模板（也可直接看技能包内 `templates/notify_config.json.example`）。
 - 密钥只用在本机，**不进脚本、不进本 Skill 目录**，可放心转发技能给他人。
 
-### 3.2 如何获取密钥
+### 3.5 如何获取密钥
 
-| 通道 | 获取方式 |
+| 渠道 | 获取方式 |
 |------|----------|
-| 企业微信群机器人 Webhook | 企业微信群 → 群设置 → 群机器人 → 添加机器人，复制 Webhook URL |
-| PushPlus（个人微信） | 注册 https://www.pushplus.plus ，在「一对一推送」拿到 token |
+| 钉钉群机器人 | 钉钉群 → 群设置 → 智能群助手 → 添加机器人 → 自定义，复制 Webhook；选「加签」时把密钥填到 `secret` |
+| 飞书群机器人 | 飞书群 → 设置 → 群机器人 → 添加自定义机器人，复制 Webhook |
+| 企业微信群机器人 | 企业微信群 → 群设置 → 群机器人 → 添加机器人，复制 Webhook URL |
+| 微信（PushPlus） | 注册 https://www.pushplus.plus ，在「一对一推送」拿到 token |
+| 邮件 | 用邮箱服务商的 SMTP 服务；`smtp_pass` 填**授权码**（非登录密码），QQ 邮箱在「设置 → 账户」开启 SMTP 后获取 |
 | Bark（iOS） | 安装 Bark App，App 内复制 `https://api.day.app/<KEY>/` |
+| Telegram | 找 @BotFather 建 bot 拿 `bot_token`；`chat_id` 可用 @userinfobot 查 |
+| Slack | Slack App 里创建 Incoming Webhook，复制 URL |
+| 通用 Webhook / 短信 / QQ | 用你自己的网关地址，配 `url` 与可选 `payload_template` |
+
+### 3.6 调试推送
+
+```bash
+push_message.py --ready                              # 只列出已就绪/未配置渠道（只读，不发送）
+push_message.py --title "测试" --content "hello"      # 发全部已配置渠道
+push_message.py --title T --content C --channels system   # 只发系统通知（零配置，离线可测，不联网）
+workbuddy_checkin.py --push-channels dingtalk,email  # 本次仅推这两个渠道
+workbuddy_checkin.py --confirm-paid                  # 放行付费渠道（短信）
+```
 
 ---
 
@@ -147,11 +249,13 @@ python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --version        
 ### 安装（用户级）
 
 将本技能目录安装到 `~/.workbuddy/skills/totorosir-workbuddy-checkin/`（Windows 即 `%USERPROFILE%\.workbuddy\skills\totorosir-workbuddy-checkin\`）。
+脚本落位时，`workbuddy_checkin.py` 与 `push_message.py` **两个文件都要**复制到 `~/.workbuddy/scripts/`（同目录，主脚本按同目录导入推送模块）。
 
 ### 卸载 / 暂停
 
 - **暂停每日自动签到**：在 WorkBuddy「自动化」列表把「WorkBuddy签到助手 · 每日自动签到」设为暂停（PAUSED）或删除，不影响脚本本身。
-- **卸载本 Skill**：删除技能目录 `~/.workbuddy/skills/totorosir-workbuddy-checkin/`，必要时一并删除脚本副本 `~/.workbuddy/scripts/workbuddy_checkin.py`。
+- **卸载本 Skill**：删除技能目录 `~/.workbuddy/skills/totorosir-workbuddy-checkin/`，必要时一并删除脚本副本 `~/.workbuddy/scripts/workbuddy_checkin.py` 与 `push_message.py`。
+- **清理推送痕迹**（可选）：删除 `~/.workbuddy/scripts/notify_config.json`（含密钥）与 `~/.workbuddy/scripts/notifications.jsonl`（`system` 渠道的本地记录）。
 - 彻底移除 = 暂停自动化 + 删除技能目录 + 删除脚本副本，无残留系统服务。
 
 ---
@@ -164,6 +268,11 @@ python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --version        
 - ❌ 不要在 `daily_limit_reached` 为真时强行派遣（服务端每日限额，脚本已自动跳过，不要绕过）。
 - ❌ 不要调用兑换 / 抽奖等未经验证的写接口（写操作只允许 `daily-checkin`、`travel/claim`、`travel/depart` 三个）。
 - ❌ 不要把 `notify_config.json`（含 webhook/token）提交到任何仓库或分享给他人。
+- ❌ 不要往付费渠道（`sms`）盲发，也不要自动加 `--confirm-paid`；付费渠道必须由用户显式确认。
+- ❌ 不要让推送失败影响签到结论或退出码（脚本已做隔离，改造时不要破坏这个边界）。
+- ❌ 不要给推送模块引入第三方 SDK / PyPI 依赖（保持纯标准库，避免用户侧装包失败）。
+- ❌ 不要只复制主脚本、漏掉 `push_message.py`（两者必须同目录，否则推送静默降级）。
+- ❌ 不要在汇报里回显任何推送凭据（webhook / smtp_pass / pushplus_token / bot_token）。
 - ❌ 不要用 crontab / 系统计划任务替代 WorkBuddy 自带自动化（Skill 场景内）；系统级定时任务请用独立的「WorkBuddy 自动签到分享包」。
 - ❌ 不要伪造、猜测或回显 token / accessToken / refreshToken。
 - ❌ 不要无限重试（脚本内部最多重试 1 次）。

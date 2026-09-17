@@ -1,6 +1,6 @@
 # 接口与登录态规范（WorkBuddy签到助手）
 
-本文件供 Skill 执行时参考，包含登录态文件格式、签到接口、字段含义、错误码与余额字段候选名。
+本文件供 Skill 执行时参考，包含登录态文件格式、签到接口、旅行接口、字段含义、错误码、余额字段候选名，以及推送模块的接口契约。
 所有接口均通过本机已登录 WorkBuddy 客户端的 `accessToken` 鉴权，**只读**登录态，绝不修改。
 
 ---
@@ -60,10 +60,12 @@ Content-Type: application/json
     "today_checked_in": false,
     "streak_days": 12,
     "daily_credit": 100,
-    "total_credit": 1340
+    "total_credits": 1340
   }
 }
 ```
+
+> 实测余额字段是 **`total_credits`（复数）**；早期脚本只认单数 `total_credit`，导致 `balance` 恒为 `null`。详见第 5 节候选名清单。
 
 已签到的判定（脚本兼容多种形态）：
 - `today_checked_in == true`
@@ -206,19 +208,103 @@ GET /activity/growth/buddy/travel/config
 
 不同版本接口返回的余额字段名不统一，脚本按以下候选名 + 嵌套层级兜底提取，写入结果 `balance` 字段（找不到则返回 None，不影响签到）：
 
-- 候选键：`total_credit` / `total_credit_balance` / `total_points` / `points_balance` / `credit_balance` / `balance` / `remain_credit` / `remain` / `score` / `integral` / `totalCredit` / `pointsBalance` / `balanceCredit`
+- 候选键（**注意复数形态**，接口实测返回的是 `total_credits`（复数），早期版本脚本只认单数导致余额恒为空）：
+  `total_credits` / `total_credit` / `total_credit_balance` / `credits` / `total_points` / `points_balance` /
+  `credit_balance` / `balance` / `remain_credit` / `remain_credits` / `remain` / `score` / `integral` /
+  `totalCredits` / `totalCredit` / `pointsBalance` / `balanceCredit`
 - 候选层级：`（顶层）` / `data` / `result` / `data.result`
 
 ---
 
-## 5. 微信推送接口（可选，密钥仅本地）
+## 6. 消息推送模块接口（`scripts/push_message.py`，可选，密钥仅本地）
 
-仅当用户主动配置 `notify_config.json` 时，才会向以下地址发请求。密钥不进入脚本或技能目录。
+仅当用户主动配置 `notify_config.json` 时，才会向对应渠道发请求。凭据不进入脚本或技能目录。
+模块**纯 Python 标准库**实现（urllib / json / hmac / hashlib / smtplib / subprocess），可独立运行。
 
-| 通道 | 地址 | 形态 |
+### 6.1 渠道注册表与构造器
+
+```python
+CHANNELS = {"dingtalk": build_dingtalk, "feishu": build_feishu, "wecom": build_wecom,
+            "wechat": build_wechat, "email": build_email, "sms": build_sms, "qq": build_qq,
+            "slack": build_slack, "telegram": build_telegram, "bark": build_bark,
+            "webhook": build_webhook}          # 11 个走网络/邮件的渠道
+SUPPORTED   = [...11 项..., "system"]          # 对外宣称支持的 12 类
+ZERO_CONFIG = {"system"}                       # 无需任何凭据
+PAID_CHANNELS = {"sms"}                        # 付费渠道，需 confirm_paid=True 才放行
+```
+
+`system` 不进入 `CHANNELS`，由 `send_one` 开头短路处理（`if channel == "system": return send_system(...)`）。
+
+每个 `build_<channel>(cfg, msg)` 统一返回下列两种形态之一，由 `send_one` 分发：
+
+| 返回 | 含义 |
+|---|---|
+| `("http", url, payload, headers)` | POST JSON 到 `url`（`headers` 可为 `None`） |
+| `("smtp", cfg, msg)` | 走 `smtplib`（仅 `email`） |
+
+必填项缺失时抛 `ConfigError`，由上层转为 `unconfigured`，**不发起任何网络请求**。
+未知渠道名由 `send_one` 直接返回 `failed`（`detail="未知渠道 X"`）。
+
+### 6.2 配置归一化
+
+`normalize_channels(cfg)` 把两种写法**按渠道合并**（同渠道以新结构为准，旧字段只补齐新结构里没有的渠道）：
+
+- 新结构：`{"channels": {"dingtalk": {"webhook": ...}, "email": {...}}}`
+- 旧扁平字段（向后兼容，仅微信三通道）：
+  - `wecom_webhook` → `wecom.webhook`
+  - `pushplus_token` → `wechat.pushplus_token`
+  - `bark_url` → `bark.server` + `bark.device_key`（由 `_split_bark_url` 自动拆分）
+
+**为什么是合并而不是二选一**：若写成「出现 `channels` 就整体忽略旧字段」，老用户只想新增一个渠道（如在 `channels` 里加 `email`）时，原有企业微信 / PushPlus / Bark 推送会静默失效。合并语义避免了这类回归。
+
+### 6.3 渠道接口清单（与实现一一对应）
+
+| 渠道 | 地址 | 形态与要点 |
 |------|------|------|
-| 企业微信群机器人 | `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<KEY>` | markdown 消息，发到该群 |
-| PushPlus（个人微信） | `https://www.pushplus.plus/send` | `token` + markdown 模板 |
-| Bark（iOS） | `https://api.day.app/<KEY>/<title>/<content>` | GET 拼接 |
+| `dingtalk` | 用户填的 `webhook` | POST markdown；填 `secret` 时追加 `&timestamp=<毫秒>&sign=<HMAC-SHA256>` |
+| `feishu` | 用户填的 `webhook` | POST `msg_type=text`；填 `secret` 时追加 `timestamp=<秒>&sign=` |
+| `wecom` | 用户填的 `webhook`（`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<KEY>`） | POST markdown，正文前缀 `# 标题`；填 `secret` 时追加毫秒级签名 |
+| `wechat` | `https://www.pushplus.plus/send` | POST，`token` + `template`（markdown/html） |
+| `email` | `smtp_host:smtp_port` | `smtplib`；默认 465 + SSL，`smtp_mode=starttls` 可切；`smtp_pass` 为授权码 |
+| `sms` | 用户填的 `url` + `payload_template` | POST（**付费**，默认拦截）；支持 `headers` |
+| `qq` | 用户填的 `url` | 直接复用 `build_webhook` |
+| `slack` | 用户填的 `webhook_url` | POST，正文 `*标题*\n正文` |
+| `telegram` | `https://api.telegram.org/bot<token>/sendMessage` | POST，`chat_id` + `text` |
+| `bark` | `<server>/push` | POST `{"device_key","title","body"}`；也接受整条 `bark_url`（自动拆分） |
+| `webhook` | 用户填的 `url` | POST；`payload_template` 支持 `{{title}}` / `{{content}}` 占位符；可选 `headers` |
+| `system` | 本地 `~/.workbuddy/scripts/notifications.jsonl` + 桌面 toast | 零配置、离线可用，不联网 |
+
+### 6.4 对外函数
+
+| 函数 | 作用 |
+|---|---|
+| `load_raw_config(path=None)` | 读取配置，回退顺序：`path` → 环境变量 `WORKBUDDY_CHECKIN_PUSH_CONFIG` → 默认 `~/.workbuddy/scripts/notify_config.json`；均不存在返回 `None` |
+| `normalize_channels(cfg)` | 归一化新旧两种结构 |
+| `resolve_channels(cfg, requested=None)` | 决定本次实际目标渠道集合（`requested` 非空则覆盖） |
+| `send_one(channel, cfg, msg, timeout)` | 发单渠道，返回 `{"channel","status",...}` |
+| `send_message(title, content, channels=None, content_type="markdown", confirm_paid=False, timeout=10, config_path=None)` | 主入口，聚合并返回 `{"ok": bool, "results": [...]}` |
+| `ready_channels(config_path=None)` | 只读列出 `ready` / `unconfigured`，供 `--diagnose` 使用（不联网） |
+| `write_sample(config_path=None)` | 生成双结构配置模板 |
+| `hmac_sign(secret, timestamp)` | 钉钉 / 飞书 / 企业微信加签 |
+| `desktop_toast(title, content)` | 跨平台桌面通知（`system` 渠道使用） |
+
+### 6.5 结果状态与错误边界（硬约定）
+
+| `status` | 含义 |
+|---|---|
+| `success` | 发送成功（HTTP 2xx，或邮件已投递） |
+| `failed` | 发送失败（网络异常 / 凭据失效 / URL 非法），`detail` 为该渠道异常摘要（截断 500 字符） |
+| `unconfigured` | 必填项缺失（`ConfigError`），**未发起请求** |
+| `skipped` | 主动跳过：付费渠道未确认、`enabled=false`、未配置任何渠道时的 `<none>` 占位 |
+
+- **单渠道失败隔离**：任一渠道异常只记入该条 `results`，`try/except` 包裹，绝不中断其他渠道，也绝不改变签到 `status` 与退出码。
+- **判定顺序**（`send_message` 内，务必照此理解结果）：
+  1. 逐个渠道判「是否已配置」——`ch in configured or ch in ZERO_CONFIG` 才进入发送目标；显式请求但未配置的 → 直接记 `unconfigured`（**未发起请求**）。
+  2. 再对付费渠道做闸门——目标里含 `PAID_CHANNELS` 且 `confirm_paid=False` → 记 `skipped`，并从目标中剔除。
+  3. 最后逐个发送，异常统一转 `failed`。
+  因此：**未配置的 `sms` 会显示 `unconfigured`，已配置但未加 `--confirm-paid` 才显示 `skipped`**。
+- **凭据脱敏**：`detail` 只含渠道名与错误摘要，**永不回显 webhook / token / 密码**。
+- 配置文件不存在 → 返回 `{"ok": True, "skipped": True, "results": [{"channel":"<none>","status":"skipped",...}]}`；`enabled=false` 且未显式指定渠道时同样静默跳过。主脚本对这类返回静默处理，用户无感知。
+- `ok` 语义：所有 `results` 均为 `success` 才为 `True`；主脚本**不据此改变签到退出码**。
 
 配置字段与获取方式见同目录下的 `examples.md`（不要在本文件里用加载式引用）。

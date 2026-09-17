@@ -18,13 +18,15 @@ WorkBuddy签到助手（每日自动签到脚本，接口直签，无需 GUI 点
 
 失败推送（可选）：
   若签到结果为 status!=ok，会读取本地配置文件
-  ~/.workbuddy/scripts/notify_config.json（若存在），向微信通道推送失败提醒。
-  支持：企业微信群机器人 webhook / PushPlus / Bark。配置缺失则静默跳过，不影响签到。
+  ~/.workbuddy/scripts/notify_config.json（若存在），向已配置的渠道推送失败提醒。
+  支持 12 类渠道：企业微信/钉钉/飞书/微信(PushPlus)/邮件/短信/QQ/Slack/Telegram/Bark/通用 Webhook/系统通知。
+  配置缺失的渠道自动跳过，单渠道失败不影响其他渠道，不影响签到。
 
 成功推送（可选，默认关闭）：
   在 notify_config.json 中设置 "success_notify": true 后，
-  签到成功（本次新签到 / 今日已签跳过）也会向同一组微信通道推送一条播报。
+  签到成功（本次新签到 / 今日已签跳过）也会向已配置渠道推送一条播报。
   默认不开启，保持「静默无打扰」；仅失败时提醒。
+  推送逻辑由 scripts/push_message.py 提供（接口/配置项对齐 totorosir-push-message 技能）。
 
 安全约定：
   - 不打印 token / accessToken / refreshToken（任何输出都不含敏感凭据）
@@ -41,7 +43,7 @@ WorkBuddy签到助手（每日自动签到脚本，接口直签，无需 GUI 点
   python workbuddy_checkin.py --travel-auto    # 显式开启旅行闭环（默认已开）
   python workbuddy_checkin.py --location N     # 指定派遣地点（1-4，缺省随机）
   python workbuddy_checkin.py --no-notify      # 跳过全部推送与桌面通知（调试用）
-  python workbuddy_checkin.py --diagnose       # 环境自检（Python/登录态/网络/桌面会话/微信配置）
+  python workbuddy_checkin.py --diagnose       # 环境自检（Python/登录态/网络/桌面会话/推送配置）
   python workbuddy_checkin.py --init-config    # 生成 notify_config.json.example 模板
   python workbuddy_checkin.py --help           # 显示帮助
   python workbuddy_checkin.py --version        # 显示版本
@@ -71,6 +73,12 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 
+# 多渠道消息推送模块（接口/配置项对齐 totorosir-push-message 技能，自包含、零依赖）
+try:
+    import push_message  # 与本脚本同目录
+except Exception:  # noqa: BLE001 - 模块缺失时回落到静默，不影响签到
+    push_message = None  # type: ignore
+
 # ---- 配置 ----
 def _auth_candidates():
     """按操作系统返回 WorkBuddy 登录态文件候选路径，依次探测。"""
@@ -99,7 +107,11 @@ STATUS_PATH = "/billing/meter/checkin-activity-status"
 CHECKIN_PATH = "/billing/meter/daily-checkin"
 HTTP_TIMEOUT = 10
 MAX_RETRY = 1
-VERSION = "2.1.0"
+VERSION = "3.0.0"
+
+# 推送渠道覆盖（由命令行 --push-channels 设定，None=用配置里全部已就绪渠道）
+_PUSH_CHANNELS = None
+_PUSH_CONFIRM_PAID = False
 
 # ---- 派猫猫旅行配置 ----
 # 关键：旅行接口与签到接口不是同一个域名，且路径不带 /v2 前缀，写错一律 404。
@@ -229,9 +241,13 @@ def _extract_balance(*bodies):
     return None
 
 
-# ---------------- 失败推送（微信） ----------------
+# ---------------- 消息推送（多渠道，见 push_message.py） ----------------
 
 def load_notify_config():
+    """读取本地推送配置（原始结构，可能含新 channels 或旧扁平字段）。
+
+    仅用于判定 enabled / success_notify 等顶层开关；实际渠道解析交给 push_message。
+    """
     if not os.path.isfile(NOTIFY_CONFIG):
         return None
     try:
@@ -244,82 +260,18 @@ def load_notify_config():
         return None
 
 
-def _http_post_json(url, payload):
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", "WorkBuddy-Checkin-Script/1.1")
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return resp.status, resp.read().decode("utf-8", "replace")
+def _push_failure(res):
+    """签到失败时，按本地配置推送提醒；配置缺失或推送模块不可用时静默跳过。
 
-
-def notify_via_wecom(webhook, title, content):
-    payload = {"msgtype": "markdown", "markdown": {"content": content}}
-    return _http_post_json(webhook, payload)
-
-
-def notify_via_pushplus(token, title, content):
-    url = "https://www.pushplus.plus/send"
-    payload = {"token": token, "title": title,
-               "content": content, "template": "markdown"}
-    return _http_post_json(url, payload)
-
-
-def notify_via_bark(bark_url, title, content):
-    # bark_url 形如 https://api.day.app/<key>/ ，脚本自动拼接标题与内容
-    base = bark_url.rstrip("/")
-    url = "%s/%s/%s" % (base,
-                        urllib.parse.quote(title),
-                        urllib.parse.quote(content))
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("User-Agent", "WorkBuddy-Checkin-Script/1.1")
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return resp.status, resp.read().decode("utf-8", "replace")
-
-
-def _dispatch_channels(cfg, title, content):
-    """按本地配置向所有已启用的微信通道推送；返回各通道结果列表（不含任何密钥）。"""
-    results = []
-    # 企业微信群机器人 webhook（优先级最高）
-    webhook = cfg.get("wecom_webhook")
-    if webhook:
-        try:
-            st, _ = notify_via_wecom(webhook, title, content)
-            results.append("wecom:%s" % st)
-        except Exception as e:
-            results.append("wecom_err:%s" % e)
-    # PushPlus（推送到个人微信）
-    token = cfg.get("pushplus_token")
-    if token:
-        try:
-            st, _ = notify_via_pushplus(token, title, content)
-            results.append("pushplus:%s" % st)
-        except Exception as e:
-            results.append("pushplus_err:%s" % e)
-    # Bark（iOS 推送）
-    bark = cfg.get("bark_url")
-    if bark:
-        try:
-            st, _ = notify_via_bark(bark, title, content)
-            results.append("bark:%s" % st)
-        except Exception as e:
-            results.append("bark_err:%s" % e)
-    return results
-
-
-def notify_failure(res):
-    """签到失败时，按本地配置推送微信提醒；配置缺失则静默跳过。"""
-    cfg = load_notify_config()
-    if not cfg:
+    通过 push_message.send_message 调度多渠道（钉钉/飞书/企业微信/PushPlus/Bark/邮件/…），
+    单渠道失败不影响其他渠道，也不影响签到结果与退出码。
+    """
+    if push_message is None:
         return
-    if cfg.get("enabled") is False:
-        return
-
-    title = "⚠️ WorkBuddy签到助手 · 签到失败"
     now = time.strftime("%Y-%m-%d %H:%M:%S")  # 本机时区（北京时间）
     msg = res.get("msg", "未知原因")
     auth_file = res.get("detail", {}).get("auth_file", "未知")
-
+    title = "⚠️ WorkBuddy签到助手 · 签到失败"
     content = (
         "### ⚠️ WorkBuddy签到助手 · 签到失败\n\n"
         "> **时间**：%s\n\n"
@@ -328,22 +280,25 @@ def notify_failure(res):
         "> **处理建议**：请检查 WorkBuddy 是否已登录、电脑是否联网、09:00 前后是否开机且客户端未退出；"
         "必要时重启客户端刷新登录态后，可手动再跑一次脚本。\n"
     ) % (now, msg, auth_file)
+    try:
+        result = push_message.send_message(
+            title, content, channels=_PUSH_CHANNELS,
+            content_type="markdown", confirm_paid=_PUSH_CONFIRM_PAID)
+        res["detail"]["notify"] = result.get("results", [])
+    except Exception:
+        pass  # 推送失败绝不影响签到
 
-    results = _dispatch_channels(cfg, title, content)
-    # 仅记录推送动作结果（不含任何密钥 / token），便于排查
-    res["detail"]["notify"] = results
 
-
-def notify_success(res):
-    """签到成功（新签到 / 今日已签跳过）时，按本地配置推送微信播报。
+def _push_success(res):
+    """签到成功（新签到 / 今日已签跳过）时，按本地配置推送播报。
 
     仅当 notify_config.json 中 success_notify=true 时才推送；否则静默。
-    与失败推送共用通道与密钥配置。
+    通过 push_message.send_message 调度多渠道；失败时静默，不影响签到。
     """
-    cfg = load_notify_config()
-    if not cfg:
+    if push_message is None:
         return
-    if cfg.get("enabled") is False:
+    cfg = load_notify_config()
+    if not cfg or cfg.get("enabled") is False:
         return
     if not cfg.get("success_notify"):
         return
@@ -382,15 +337,20 @@ def notify_success(res):
         lines += "> **说明**：系统定时任务 / 技能已正常执行，无需处理。\n"
         content = lines
 
-    results = _dispatch_channels(cfg, title, content)
-    res["detail"]["notify_success"] = results
+    try:
+        result = push_message.send_message(
+            title, content, channels=_PUSH_CHANNELS,
+            content_type="markdown", confirm_paid=_PUSH_CONFIRM_PAID)
+        res["detail"]["notify_success"] = result.get("results", [])
+    except Exception:
+        pass  # 推送失败绝不影响签到
 
 
 def notify_system(res):
     """签到完成后弹出操作系统级桌面通知（toast / 气球提示），展示结果 + 积分余额。
 
     跨平台兼容 Windows / macOS / Linux；best-effort、非阻塞、失败静默，
-    绝不影响签到结果与退出码。受 --no-notify 一并抑制（与微信推送调试开关一致）。
+    绝不影响签到结果与退出码。受 --no-notify 一并抑制（与消息推送调试开关一致）。
     """
     try:
         status = res.get("status")
@@ -812,23 +772,8 @@ def _has_desktop_session():
         return "unknown"
 
 
-def write_config_example():
-    """生成 notify_config.json.example 模板（不含任何真实密钥，可放心查看/转发）。"""
-    path = NOTIFY_CONFIG + ".example"
-    example = {
-        "enabled": True,
-        "success_notify": False,
-        "wecom_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=替换为你的群机器人KEY",
-        "pushplus_token": "替换为你的PushPlus_token（个人微信推送）",
-        "bark_url": "https://api.day.app/替换为你的Bark_KEY/"
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(example, f, ensure_ascii=False, indent=2)
-    return path
-
-
 def diagnose():
-    """环境自检：检查 Python / 登录态 / 网络 / 桌面会话 / 微信配置。
+    """环境自检：检查 Python / 登录态 / 网络 / 桌面会话 / 推送配置。
 
     只读、不触发任何签到请求，便于用户首次安装后快速确认「能不能用」。
     返回结构化 dict，由 main() 以 JSON 打印。
@@ -879,20 +824,23 @@ def diagnose():
         else "未检测到桌面会话（如锁屏/无 GUI 服务态），系统通知可能不弹出；stdout 与 checkin.log 仍可记录结果"
     )
 
-    # 5) 微信推送配置
-    cfg = load_notify_config()
-    if cfg is None:
-        report["notify_config"]["present"] = False
-        report["notify_config"]["hint"] = "未配置（可选）；运行 --init-config 生成模板"
+    # 5) 消息推送配置
+    if push_message is not None:
+        report["notify_config"] = push_message.ready_channels()
+        report["notify_config"]["hint"] = "运行 --init-config 生成模板；--push-channels 可指定本次渠道"
     else:
-        report["notify_config"]["present"] = True
-        report["notify_config"]["enabled"] = cfg.get("enabled", True)
-        report["notify_config"]["success_notify"] = bool(cfg.get("success_notify"))
-        channels = [k for k in ("wecom_webhook", "pushplus_token", "bark_url") if cfg.get(k)]
-        report["notify_config"]["channels"] = channels
-        # 简单校验：enabled 但无通道 = 配了也不会推
-        if cfg.get("enabled", True) and not channels:
-            report["notify_config"]["warn"] = "enabled=true 但未填写任何通道，推送不会生效"
+        cfg = load_notify_config()
+        if cfg is None:
+            report["notify_config"]["present"] = False
+            report["notify_config"]["hint"] = "未配置（可选）；运行 --init-config 生成模板"
+        else:
+            report["notify_config"]["present"] = True
+            report["notify_config"]["enabled"] = cfg.get("enabled", True)
+            report["notify_config"]["success_notify"] = bool(cfg.get("success_notify"))
+            channels = [k for k in ("wecom_webhook", "pushplus_token", "bark_url") if cfg.get(k)]
+            report["notify_config"]["channels"] = channels
+            if cfg.get("enabled", True) and not channels:
+                report["notify_config"]["warn"] = "enabled=true 但未填写任何通道，推送不会生效"
 
     return report
 
@@ -908,7 +856,9 @@ USAGE = (
     "  python workbuddy_checkin.py --travel-auto         # 显式开启旅行闭环（默认已开）\n"
     "  python workbuddy_checkin.py --location N          # 指定派遣地点（1-4，缺省随机）\n"
     "  python workbuddy_checkin.py --no-notify           # 跳过全部推送与桌面通知（调试用）\n"
-    "  python workbuddy_checkin.py --diagnose            # 环境自检（Python/登录态/网络/桌面会话/微信配置）\n"
+    "  python workbuddy_checkin.py --push-channels dingtalk,email   # 仅向指定渠道推送（覆盖配置）\n"
+    "  python workbuddy_checkin.py --confirm-paid        # 允许发送付费渠道（如短信 sms）\n"
+    "  python workbuddy_checkin.py --diagnose            # 环境自检（Python/登录态/网络/桌面会话/推送配置）\n"
     "  python workbuddy_checkin.py --init-config         # 生成 notify_config.json.example 模板\n"
     "  python workbuddy_checkin.py --help                # 显示本帮助\n"
     "  python workbuddy_checkin.py --version             # 显示版本号\n\n"
@@ -918,7 +868,10 @@ USAGE = (
     "  已到达不会丢积分，下次运行自动补领。旅行接口不可用时静默降级，不影响签到结论。\n\n"
     "退出码：成功 0 / 失败 1（便于自动化判断是否推送告警）\n"
     "签到成功后会在结果中展示当前积分余额（若接口返回 balance / total_credit 等字段）。\n"
-    "微信推送开关见 ~/.workbuddy/scripts/notify_config.json 的 \"success_notify\" 字段。\n"
+    "消息推送说明：\n"
+    "  支持 12 类渠道：dingtalk/feishu/wecom/wechat(pushplus)/email/sms/qq/slack/telegram/bark/webhook/system。\n"
+    "  失败自动推送（配置缺失则静默跳过）；成功播报需 success_notify=true。\n"
+    "  渠道/凭据见 ~/.workbuddy/scripts/notify_config.json（旧结构微信三字段仍兼容）。\n"
 )
 
 
@@ -934,17 +887,34 @@ def main():
         rep = diagnose()
         print(json.dumps(rep, ensure_ascii=False, indent=2))
         sys.exit(0)
-    # 生成微信推送配置模板（可选）
+    # 生成推送配置模板（可选）
     if "--init-config" in sys.argv:
-        p = write_config_example()
+        if push_message is None:
+            print("推送模块缺失，无法生成模板。")
+            sys.exit(1)
+        p = push_message.write_sample()
         print("已生成配置模板：%s" % p)
-        print("请复制为 notify_config.json 并填入你的微信通道密钥（或使用默认值保持关闭）。")
+        print("复制为 notify_config.json 并填入你的通道密钥（或使用默认值保持关闭）。")
+        print("支持渠道见 README『消息推送』章节；旧结构微信三字段仍兼容。")
         sys.exit(0)
     check_only = "--check-only" in sys.argv
     no_notify = "--no-notify" in sys.argv
     travel_only = "travel" in sys.argv[1:]
     travel_auto_flag = "--travel-auto" in sys.argv
     no_travel = "--no-travel" in sys.argv
+
+    # 推送渠道覆盖（可选）：--push-channels dingtalk,email ；缺省用配置里全部已就绪渠道
+    global _PUSH_CHANNELS, _PUSH_CONFIRM_PAID
+    _PUSH_CHANNELS = None
+    _PUSH_CONFIRM_PAID = False
+    if "--push-channels" in sys.argv:
+        try:
+            idx = sys.argv.index("--push-channels")
+            _PUSH_CHANNELS = [c.strip() for c in sys.argv[idx + 1].split(",") if c.strip()]
+        except (IndexError, ValueError):
+            sys.stderr.write("[push] --push-channels 后需跟逗号分隔的渠道名，如 dingtalk,email\n")
+    if "--confirm-paid" in sys.argv:
+        _PUSH_CONFIRM_PAID = True
 
     location_id = None
     if "--location" in sys.argv:
@@ -977,13 +947,13 @@ def main():
     # 失败推送（配置缺失则跳过；--no-notify 用于调试）
     if not no_notify and res.get("status") != "ok":
         try:
-            notify_failure(res)
+            _push_failure(res)
         except Exception:
             pass  # 推送失败不影响签到结果与退出码
     # 成功推送（仅当 notify_config.json 中 success_notify=true；--no-notify 用于调试）
     if not no_notify and res.get("status") == "ok":
         try:
-            notify_success(res)
+            _push_success(res)
         except Exception:
             pass  # 推送失败不影响签到结果与退出码
     # 系统桌面通知（跨平台 toast / 气球；--no-notify 一并抑制；失败静默）
