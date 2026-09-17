@@ -8,6 +8,13 @@ WorkBuddy签到助手（每日自动签到脚本，接口直签，无需 GUI 点
   2. 查询今日签到状态  POST {base}/billing/meter/checkin-activity-status
   3. 若今日未签到，调用 POST {base}/billing/meter/daily-checkin 领取
   4. 已签到 / 接口返回 code=10001 则安全跳过，不做重复领取
+  5. 派猫猫旅行（默认随签到一起跑全自动闭环「先领后派」）：
+     查询 https://www.workbuddy.cn/activity/growth/buddy/travel/status
+     已到达(arrived) → POST .../travel/claim 领取旅行积分
+     空闲(idle)且未达每日上限 → POST .../travel/depart 派出 Buddy
+     旅行中(traveling) → 不派遣，仅展示到达倒计时
+     注意：旅行接口域名是 www.workbuddy.cn（与签到的 www.codebuddy.cn 不同），
+           且路径不带 /v2 前缀。
 
 失败推送（可选）：
   若签到结果为 status!=ok，会读取本地配置文件
@@ -26,13 +33,18 @@ WorkBuddy签到助手（每日自动签到脚本，接口直签，无需 GUI 点
   - 异常只记录失败原因，最多重试 1 次，不无限重试
 
 用法：
-  python workbuddy_checkin.py            # 查询 + 必要时领取
-  python workbuddy_checkin.py --check-only   # 仅查询状态（只读，不领取）
-  python workbuddy_checkin.py --no-notify    # 跳过全部推送与桌面通知（调试用）
-  python workbuddy_checkin.py --diagnose     # 环境自检（Python/登录态/网络/桌面会话/微信配置）
-  python workbuddy_checkin.py --init-config  # 生成 notify_config.json.example 模板
-  python workbuddy_checkin.py --help         # 显示帮助
-  python workbuddy_checkin.py --version      # 显示版本
+  python workbuddy_checkin.py                  # 签到 + 派猫猫旅行全自动闭环（默认）
+  python workbuddy_checkin.py --no-travel      # 只签到，跳过旅行（最快）
+  python workbuddy_checkin.py --check-only     # 仅查询状态（只读，不领取、不写旅行）
+  python workbuddy_checkin.py travel           # 只查派猫猫旅行状态（只读）
+  python workbuddy_checkin.py travel --travel-auto      # 只跑旅行闭环（不签到）
+  python workbuddy_checkin.py --travel-auto    # 显式开启旅行闭环（默认已开）
+  python workbuddy_checkin.py --location N     # 指定派遣地点（1-4，缺省随机）
+  python workbuddy_checkin.py --no-notify      # 跳过全部推送与桌面通知（调试用）
+  python workbuddy_checkin.py --diagnose       # 环境自检（Python/登录态/网络/桌面会话/微信配置）
+  python workbuddy_checkin.py --init-config    # 生成 notify_config.json.example 模板
+  python workbuddy_checkin.py --help           # 显示帮助
+  python workbuddy_checkin.py --version        # 显示版本
   成功推送开关见 ~/.workbuddy/scripts/notify_config.json 的 "success_notify"
 """
 
@@ -49,6 +61,7 @@ if sys.version_info < (3, 6):
 
 import json
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -86,7 +99,20 @@ STATUS_PATH = "/billing/meter/checkin-activity-status"
 CHECKIN_PATH = "/billing/meter/daily-checkin"
 HTTP_TIMEOUT = 10
 MAX_RETRY = 1
-VERSION = "2.0.0"
+VERSION = "2.1.0"
+
+# ---- 派猫猫旅行配置 ----
+# 关键：旅行接口与签到接口不是同一个域名，且路径不带 /v2 前缀，写错一律 404。
+TRAVEL_BASE = "https://www.workbuddy.cn"
+TRAVEL_STATUS_PATH = "/activity/growth/buddy/travel/status"   # GET  旅行状态
+TRAVEL_CONFIG_PATH = "/activity/growth/buddy/travel/config"   # GET  可选地点
+TRAVEL_CLAIM_PATH = "/activity/growth/buddy/travel/claim"     # POST 领取旅行积分
+TRAVEL_DEPART_PATH = "/activity/growth/buddy/travel/depart"   # POST 派出 Buddy
+TRAVEL_STATE_TEXT = {
+    "idle": "空闲（可派遣）",
+    "traveling": "旅行中",
+    "arrived": "已到达，待领取",
+}
 # 失败推送配置（含密钥，仅本地，不入库）
 NOTIFY_CONFIG = os.path.join(os.path.expanduser("~"),
                              ".workbuddy", "scripts", "notify_config.json")
@@ -131,7 +157,11 @@ def load_token(auth_path):
 
 def api_call(base, path, token, payload=None, method="POST"):
     url = base + path
-    data = json.dumps(payload if payload is not None else {}).encode("utf-8")
+    # GET 且未显式传 payload 时不发请求体；其余情况按 JSON 编码发送
+    if method == "GET" and payload is None:
+        data = None
+    else:
+        data = json.dumps(payload if payload is not None else {}).encode("utf-8")
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", "Bearer %s" % token)
     req.add_header("Content-Type", "application/json")
@@ -169,9 +199,11 @@ def _extract_balance(*bodies):
     找不到则返回 None（不影响签到主流程）。
     """
     candidates = (
-        "total_credit", "total_credit_balance", "total_points", "points_balance",
-        "credit_balance", "balance", "remain_credit", "remain", "score",
-        "integral", "totalCredit", "pointsBalance", "balanceCredit",
+        "total_credits", "total_credit", "total_credit_balance", "total_points",
+        "points_balance", "credit_balance", "balance", "remain_credit",
+        "remain_credits", "remain", "score", "credits",
+        "integral", "totalCredit", "totalCredits", "pointsBalance",
+        "balanceCredit",
     )
     sections = ("", "data", "result", "data.result")
     for body in bodies:
@@ -414,27 +446,10 @@ def _win_toast(title, body):
 
 # ---------------- 主流程 ----------------
 
-def run(check_only):
+def _do_checkin(base, token, check_only):
+    """执行签到主流程（查询状态 → 必要时领取）。返回结构化结果片段。"""
     result = {"status": "unknown", "action": None, "points": None,
               "balance": None, "msg": "", "detail": {}}
-
-    auth_path = find_auth_file()
-    if not auth_path:
-        result.update(status="error", msg="未找到本机登录态文件，请确认 WorkBuddy 已登录")
-        return result
-
-    try:
-        token, domain = load_token(auth_path)
-    except Exception as e:
-        result.update(status="error", msg="读取登录态失败: %s" % e)
-        return result
-
-    base = "https://%s/v2" % domain
-    result["detail"]["domain"] = domain
-    result["detail"]["auth_file"] = auth_path
-    # 仅记录 token 形态，绝不记录真实值
-    result["detail"]["token_masked"] = mask_token(token)
-
     attempt = 0
     last_err = None
     while attempt <= MAX_RETRY:
@@ -527,6 +542,233 @@ def run(check_only):
             time.sleep(2)
 
     result.update(status="error", msg="重试 %d 次后仍失败: %s" % (MAX_RETRY, last_err))
+    return result
+
+
+# ---------------- 派猫猫旅行 ----------------
+
+def _travel_get(token, path):
+    """旅行只读 GET；失败 / 非 200 / 非 0 码均返回 None（静默降级，不影响签到主结果）。"""
+    try:
+        st, body = api_call(TRAVEL_BASE, path, token, method="GET")
+        if st != 200 or not isinstance(body, dict) or body.get("code") != 0:
+            return None
+        return body.get("data")
+    except Exception:
+        return None
+
+
+def _fmt_duration(seconds):
+    """把秒数格式化为「X 小时 Y 分」。"""
+    if seconds is None:
+        return None
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes = rem // 60
+    if hours > 0:
+        return "%d 小时 %d 分" % (hours, minutes)
+    if minutes > 0:
+        return "%d 分钟" % minutes
+    return "%d 秒" % seconds
+
+
+def parse_travel(status, config=None):
+    """规整派猫猫旅行状态；字段缺失填 None，绝不编造。"""
+    if not isinstance(status, dict):
+        return {"available": False}
+    locations = []
+    if isinstance(config, dict) and isinstance(config.get("locations"), list):
+        for loc in config["locations"]:
+            if isinstance(loc, dict):
+                locations.append({"id": loc.get("id"),
+                                  "name": loc.get("name") or "未命名地点"})
+    state = status.get("state")
+    remaining = None
+    if state == "traveling":
+        arrive, now = status.get("arrive_at"), status.get("server_now")
+        if isinstance(arrive, int) and isinstance(now, int):
+            remaining = max(0, arrive - now)
+    loc = status.get("location")
+    return {
+        "available": True,
+        "state": state,
+        "state_text": TRAVEL_STATE_TEXT.get(state, state),
+        "location_name": loc.get("name") if isinstance(loc, dict) else None,
+        "reward_credit": status.get("reward_credit"),
+        "remaining_seconds": remaining,
+        "remaining_text": _fmt_duration(remaining) if remaining is not None else None,
+        "daily_limit_reached": status.get("daily_limit_reached"),
+        "locations": locations,
+    }
+
+
+def travel_claim(token):
+    """领取已到达旅行的积分（写接口）。无可领取时服务端返回非 0 码，如实上报。"""
+    try:
+        st, body = api_call(TRAVEL_BASE, TRAVEL_CLAIM_PATH, token, payload={})
+    except Exception as e:
+        return {"action": "failed", "success": False, "message": str(e)}
+    if st == 200 and isinstance(body, dict) and body.get("code") == 0:
+        data = body.get("data") or {}
+        credit = data.get("reward_credit")
+        return {"action": "claimed", "success": True, "reward_credit": credit,
+                "message": "已领取旅行奖励 +%s 积分" % (credit if credit is not None else "?")}
+    return {"action": "failed", "success": False,
+            "message": (body.get("msg") if isinstance(body, dict) else None) or ("HTTP %s" % st),
+            "code": body.get("code") if isinstance(body, dict) else None}
+
+
+def travel_depart(token, location_id=None, locations=None):
+    """派出 Buddy 旅行（写接口）。location_id 为空时从可选地点中随机。
+
+    仅调用方确认「未达每日上限」后才应调用本函数；本函数不再重复查询状态。
+    """
+    chosen = location_id
+    if chosen is None:
+        ids = [loc.get("id") for loc in (locations or []) if loc.get("id") is not None]
+        if not ids:
+            return {"action": "failed", "success": False,
+                    "message": "未能获取可选地点列表，已跳过派遣"}
+        chosen = random.choice(ids)
+    try:
+        st, body = api_call(TRAVEL_BASE, TRAVEL_DEPART_PATH, token,
+                            payload={"location_id": chosen})
+    except Exception as e:
+        return {"action": "failed", "success": False,
+                "location_id": chosen, "message": str(e)}
+    if st == 200 and isinstance(body, dict) and body.get("code") == 0:
+        data = body.get("data") or {}
+        loc = data.get("location") or {}
+        return {"action": "departed", "success": True, "location_id": chosen,
+                "location_name": loc.get("name"), "arrive_at": data.get("arrive_at"),
+                "message": "已派出 Buddy 前往【%s】" % (loc.get("name") or ("地点 %s" % chosen))}
+    return {"action": "failed", "success": False, "location_id": chosen,
+            "message": (body.get("msg") if isinstance(body, dict) else None) or ("HTTP %s" % st),
+            "code": body.get("code") if isinstance(body, dict) else None}
+
+
+def travel_auto(token, location_id=None):
+    """派猫猫旅行全自动闭环（写操作）：先领取、后派遣。
+
+    安全约束：派遣前必须先确认 daily_limit_reached 为假，达上限绝不发写请求。
+    已到达(arrived) 状态会一直保留、不会丢积分，下次运行自动补领。
+    """
+    log = []
+    status = _travel_get(token, TRAVEL_STATUS_PATH)
+    if status is None:
+        return {"available": False, "success": False,
+                "log": ["查询旅行状态失败，已跳过全部写操作"], "status": None}
+
+    if status.get("state") == "arrived":
+        result = travel_claim(token)
+        log.append(result.get("message") or result.get("action"))
+        if result.get("action") == "claimed":
+            fresh = _travel_get(token, TRAVEL_STATUS_PATH)
+            if fresh is not None:
+                status = fresh
+
+    if status.get("daily_limit_reached"):
+        log.append("今日派遣次数已用完，跳过派遣")
+    elif status.get("state") in (None, "", "idle"):
+        config = _travel_get(token, TRAVEL_CONFIG_PATH) or {}
+        result = travel_depart(token, location_id, config.get("locations") or [])
+        log.append(result.get("message") or result.get("action"))
+    else:
+        log.append("Buddy 正在旅行中，无需派遣")
+
+    final = _travel_get(token, TRAVEL_STATUS_PATH) or status
+    return {"available": True, "success": True, "log": log, "status": final}
+
+
+def _run_travel(token, auto=True, location_id=None):
+    """收集派猫猫旅行数据；auto 为真时执行全自动闭环（先领后派）。"""
+    status = _travel_get(token, TRAVEL_STATUS_PATH)
+    config = _travel_get(token, TRAVEL_CONFIG_PATH)
+    auto_log = None
+    if auto:
+        res = travel_auto(token, location_id)
+        auto_log = res.get("log") or []
+        if res.get("status"):
+            status = res["status"]
+    parsed = parse_travel(status, config)
+    if auto_log is not None:
+        parsed["auto_log"] = auto_log
+    return parsed
+
+
+def _append_travel_msg(msg, travel):
+    """把旅行状态拼进主消息，便于桌面通知与日志一眼看全。"""
+    parts = []
+    if travel.get("state_text"):
+        parts.append(travel["state_text"])
+    if travel.get("location_name"):
+        parts.append(travel["location_name"])
+    if travel.get("state") == "traveling" and travel.get("remaining_text"):
+        parts.append("还需 %s" % travel["remaining_text"])
+    if travel.get("state") == "arrived" and travel.get("reward_credit") is not None:
+        parts.append("可领 %s 积分" % travel["reward_credit"])
+    auto_log = travel.get("auto_log") or []
+    if auto_log:
+        parts.append("；".join(str(x) for x in auto_log))
+    if not parts:
+        return msg
+    tail = "派猫猫旅行：" + "，".join(parts)
+    return (msg + " ｜ " + tail) if msg else tail
+
+
+def run(check_only=False, do_checkin=True, travel_mode="auto", location_id=None):
+    """主流程：登录态 →（可选）签到 →（可选）派猫猫旅行。
+
+    travel_mode：
+      "auto"     全自动闭环（先领后派），默认
+      "readonly" 仅查询状态，不写
+      "off"      跳过旅行
+    """
+    result = {"status": "unknown", "action": None, "points": None,
+              "balance": None, "msg": "", "detail": {}}
+
+    auth_path = find_auth_file()
+    if not auth_path:
+        result.update(status="error", msg="未找到本机登录态文件，请确认 WorkBuddy 已登录")
+        return result
+
+    try:
+        token, domain = load_token(auth_path)
+    except Exception as e:
+        result.update(status="error", msg="读取登录态失败: %s" % e)
+        return result
+
+    base = "https://%s/v2" % domain
+    result["detail"]["domain"] = domain
+    result["detail"]["auth_file"] = auth_path
+    # 仅记录 token 形态，绝不记录真实值
+    result["detail"]["token_masked"] = mask_token(token)
+
+    # ---- 签到 ----
+    if do_checkin:
+        ck = _do_checkin(base, token, check_only)
+        result["status"] = ck.get("status", result["status"])
+        result["action"] = ck.get("action")
+        result["points"] = ck.get("points")
+        result["balance"] = ck.get("balance")
+        result["msg"] = ck.get("msg", "")
+        result["detail"].update(ck.get("detail", {}))
+
+    # ---- 派猫猫旅行 ----
+    if travel_mode != "off":
+        travel = _run_travel(token, auto=(travel_mode == "auto"),
+                             location_id=location_id)
+        result["travel"] = travel
+        # 旅行接口不可用时静默降级，绝不改变签到结论
+        if travel.get("available"):
+            result["msg"] = _append_travel_msg(result.get("msg", ""), travel)
+        if not do_checkin:
+            # 纯旅行模式：整体状态由旅行结果决定
+            result["status"] = "ok" if travel.get("available") else "error"
+            result["action"] = "travel"
+            if not travel.get("available"):
+                result["msg"] = "查询派猫猫旅行状态失败（请确认已登录且网络正常）"
+
     return result
 
 
@@ -656,15 +898,24 @@ def diagnose():
 
 
 USAGE = (
-    "WorkBuddy签到助手（接口直签）\n\n"
+    "WorkBuddy签到助手（接口直签 + 派猫猫旅行）\n\n"
     "用法：\n"
-    "  python workbuddy_checkin.py                # 查询今日状态 + 必要时领取\n"
-    "  python workbuddy_checkin.py --check-only   # 仅查询状态（只读，不领取）\n"
-    "  python workbuddy_checkin.py --no-notify    # 跳过全部推送与桌面通知（调试用）\n"
-    "  python workbuddy_checkin.py --diagnose     # 环境自检（Python/登录态/网络/桌面会话/微信配置）\n"
-    "  python workbuddy_checkin.py --init-config  # 生成 notify_config.json.example 模板\n"
-    "  python workbuddy_checkin.py --help         # 显示本帮助\n"
-    "  python workbuddy_checkin.py --version      # 显示版本号\n\n"
+    "  python workbuddy_checkin.py                       # 签到 + 派猫猫旅行全自动闭环（默认）\n"
+    "  python workbuddy_checkin.py --no-travel           # 只签到，跳过旅行（最快）\n"
+    "  python workbuddy_checkin.py --check-only          # 仅查询（只读，不签到也不写旅行）\n"
+    "  python workbuddy_checkin.py travel                # 只查派猫猫旅行状态（只读，不签到）\n"
+    "  python workbuddy_checkin.py travel --travel-auto  # 只跑旅行闭环（不签到）\n"
+    "  python workbuddy_checkin.py --travel-auto         # 显式开启旅行闭环（默认已开）\n"
+    "  python workbuddy_checkin.py --location N          # 指定派遣地点（1-4，缺省随机）\n"
+    "  python workbuddy_checkin.py --no-notify           # 跳过全部推送与桌面通知（调试用）\n"
+    "  python workbuddy_checkin.py --diagnose            # 环境自检（Python/登录态/网络/桌面会话/微信配置）\n"
+    "  python workbuddy_checkin.py --init-config         # 生成 notify_config.json.example 模板\n"
+    "  python workbuddy_checkin.py --help                # 显示本帮助\n"
+    "  python workbuddy_checkin.py --version             # 显示版本号\n\n"
+    "派猫猫旅行说明：\n"
+    "  状态三态：idle 空闲 / traveling 旅行中 / arrived 已到达待领取。\n"
+    "  闭环顺序为先领取、后派遣；派遣前必查每日上限，达上限绝不发写请求。\n"
+    "  已到达不会丢积分，下次运行自动补领。旅行接口不可用时静默降级，不影响签到结论。\n\n"
     "退出码：成功 0 / 失败 1（便于自动化判断是否推送告警）\n"
     "签到成功后会在结果中展示当前积分余额（若接口返回 balance / total_credit 等字段）。\n"
     "微信推送开关见 ~/.workbuddy/scripts/notify_config.json 的 \"success_notify\" 字段。\n"
@@ -691,8 +942,34 @@ def main():
         sys.exit(0)
     check_only = "--check-only" in sys.argv
     no_notify = "--no-notify" in sys.argv
+    travel_only = "travel" in sys.argv[1:]
+    travel_auto_flag = "--travel-auto" in sys.argv
+    no_travel = "--no-travel" in sys.argv
+
+    location_id = None
+    if "--location" in sys.argv:
+        try:
+            idx = sys.argv.index("--location")
+            location_id = int(sys.argv[idx + 1])
+        except (ValueError, IndexError):
+            sys.stderr.write("[travel] --location 需为整数（1-4），已忽略\n")
+
+    if travel_only:
+        # 纯旅行模式：不签到；默认只读，加 --travel-auto 才跑闭环
+        do_checkin = False
+        travel_mode = "auto" if travel_auto_flag else "readonly"
+    else:
+        do_checkin = True
+        if no_travel:
+            travel_mode = "off"
+        elif check_only:
+            travel_mode = "readonly"
+        else:
+            travel_mode = "auto"  # 默认随签到跑全自动闭环
+
     try:
-        res = run(check_only)
+        res = run(check_only=check_only, do_checkin=do_checkin,
+                  travel_mode=travel_mode, location_id=location_id)
     except Exception as e:
         res = {"status": "error", "action": None, "points": None,
                "msg": "脚本未捕获异常: %s" % e, "detail": {}}

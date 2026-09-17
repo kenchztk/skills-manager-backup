@@ -100,7 +100,92 @@ Content-Type: application/json
 
 ---
 
-## 3. 错误码 / 状态码对照
+## 3. 派猫猫旅行接口
+
+基础地址：`https://www.workbuddy.cn`
+
+> **与签到不是同一个域名，且路径不带 `/v2` 前缀**——这是最容易踩的坑。
+> 用登录态里的 `auth.domain`（`www.codebuddy.cn`）或误加 `/v2` 都会 404。
+> 旅行接口仅需 Bearer Token，**无需** Turing Shield 设备指纹。
+
+### 3.1 旅行状态（只读）
+
+```
+GET /activity/growth/buddy/travel/status
+Authorization: Bearer <accessToken>
+```
+
+响应示例：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "state": "idle",
+    "location": { "id": 1, "name": "咖啡馆" },
+    "reward_credit": 0,
+    "arrive_at": 1757500000,
+    "server_now": 1757490000,
+    "daily_limit_reached": false,
+    "record_id": 123
+  }
+}
+```
+
+状态三态：
+
+| `state` | 含义 | 可执行动作 |
+|---|---|---|
+| `idle` | 空闲 | 未达每日上限时可 `depart` |
+| `traveling` | 旅行中 | 无；用 `arrive_at - server_now` 算到达倒计时 |
+| `arrived` | 已到达，待领取 | 可 `claim` 领取积分 |
+
+### 3.2 领取旅行积分（写）
+
+```
+POST /activity/growth/buddy/travel/claim
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+
+{}
+```
+
+成功：`{"code":0,"data":{"reward_credit":8}}`。
+无可领取时服务端返回非 0 码，脚本如实上报、绝不编造结果。
+
+### 3.3 派出 Buddy（写）
+
+```
+POST /activity/growth/buddy/travel/depart
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+
+{"location_id": 1}
+```
+
+成功：`{"code":0,"data":{"location":{"id":1,"name":"咖啡馆"},"arrive_at":1757500000}}`。
+
+### 3.4 可选地点（只读）
+
+```
+GET /activity/growth/buddy/travel/config
+```
+
+返回 `data.locations`（`id` / `name` / `duration_hours_min` / `duration_hours_max` / `reward_credit_min` / `reward_credit_max`）。
+实测四个地点为**咖啡馆 / 商场店铺 / 健身房 / 古镇客栈**，时长与积分区间完全相同（随机 1-4 小时、5-10 积分），**收益无差异**，`location_id` 缺省时随机选一个。
+
+### 3.5 派遣前置检查（硬规则）
+
+调用 `depart` 前必须先读 `status` 并同时满足：
+
+1. `state == "idle"`
+2. `daily_limit_reached` 为假
+
+任一不满足即跳过派遣，**不发任何写请求**。
+
+---
+
+## 4. 错误码 / 状态码对照
 
 | HTTP | code | 含义 | 脚本处理 |
 |------|------|------|----------|
@@ -110,10 +195,14 @@ Content-Type: application/json
 | — | — | `accessToken` 缺失/过期 | `status=error`，提示重新登录客户端 |
 
 > 脚本对非 2xx 也解析响应体，避免把"已签到 400"误判为异常。
+>
+> **旅行接口的降级约定**：只读接口（`status` / `config`）失败时置 `travel.available=false` 并静默跳过，
+> 绝不改变签到结论；写接口（`claim` / `depart`）返回非 0 码时，把服务端 `msg` 如实记入
+> `travel.auto_log`，同样不影响签到状态与退出码。
 
 ---
 
-## 4. 积分余额字段候选名
+## 5. 积分余额字段候选名
 
 不同版本接口返回的余额字段名不统一，脚本按以下候选名 + 嵌套层级兜底提取，写入结果 `balance` 字段（找不到则返回 None，不影响签到）：
 
@@ -132,4 +221,4 @@ Content-Type: application/json
 | PushPlus（个人微信） | `https://www.pushplus.plus/send` | `token` + markdown 模板 |
 | Bark（iOS） | `https://api.day.app/<KEY>/<title>/<content>` | GET 拼接 |
 
-配置字段与获取方式见 `@references/examples.md`。
+配置字段与获取方式见同目录下的 `examples.md`（不要在本文件里用加载式引用）。

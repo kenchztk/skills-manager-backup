@@ -2,15 +2,16 @@
 name: totorosir-workbuddy-checkin
 display_name: WorkBuddy签到助手
 display_name_en: WorkBuddy Check-in Assistant
-description: WorkBuddy签到助手（WorkBuddy「Buddy 加油站」每日签到自动化 Skill，接口直签，无需点击 GUI，跨平台支持 Windows / macOS / Linux）。当用户说"每天自动签到 WorkBuddy / 每日签到 / 自动领 Buddy 加油站积分 / 自动领 100 积分 / 设置 WorkBuddy 每日签到 / WorkBuddy 打卡 / 自动打卡 WorkBuddy / 帮我签到一次 / 现在签个到 / 检查签到环境"时使用。原理是读取本机已登录 WorkBuddy 的登录态 accessToken，直接调用官方签到接口完成领取；支持桌面通知与可选微信推送。
-description_zh: 读取本机 WorkBuddy 登录态，直接调用官方接口完成「Buddy 加油站」每日签到（无需点击 GUI），支持桌面通知与可选微信推送，可设置每日 09:00 自动签到。
-description_en: Auto check-in to WorkBuddy Buddy Station using the local auth token via the official API (no GUI clicks). Cross-platform, with desktop notification and optional WeChat push; supports a daily 09:00 automation.
+description: WorkBuddy签到助手（WorkBuddy「Buddy 加油站」每日签到自动化 Skill，接口直签，无需点击 GUI，跨平台支持 Windows / macOS / Linux）。当用户说"每天自动签到 WorkBuddy / 每日签到 / 自动领 Buddy 加油站积分 / 自动领 100 积分 / 设置 WorkBuddy 每日签到 / WorkBuddy 打卡 / 自动打卡 WorkBuddy / 帮我签到一次 / 现在签个到 / 检查签到环境 / 派猫猫旅行 / 猫猫旅行 / 旅行积分 / 领旅行奖励 / Buddy 在旅行吗 / 还有多久回来 / 自动派猫猫"时使用。原理是读取本机已登录 WorkBuddy 的登录态 accessToken，直接调用官方签到接口完成领取，并支持派猫猫旅行全自动闭环（先领后派）；支持桌面通知与可选微信推送。
+description_zh: 读取本机 WorkBuddy 登录态，直接调用官方接口完成「Buddy 加油站」每日签到（无需点击 GUI），并支持派猫猫旅行（查状态 / 领旅行积分 / 派 Buddy 出门，默认随签到跑全自动闭环）。支持桌面通知与可选微信推送，可设置每日 09:00 自动签到。
+description_en: Auto check-in to WorkBuddy Buddy Station using the local auth token via the official API (no GUI clicks), plus Buddy Travel support (query status, claim travel credits, dispatch Buddy; runs a claim-then-dispatch loop by default). Cross-platform, with desktop notification and optional WeChat push; supports a daily 09:00 automation.
 category: 自动化
-version: 2.0.0
+version: 2.1.0
 author: totorosir
+agent_created: true
 ---
 
-# WorkBuddy签到助手（每日自动签到 · 接口直签）
+# WorkBuddy签到助手（每日自动签到 · 派猫猫旅行 · 接口直签）
 
 WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token 的 HTTP 接口请求，**不需要**模拟点击左下角「个人信息 → Buddy 加油站 → 签到」这一套 GUI 流程（自动化代理也没有点击桌面 UI 的能力）。
 
@@ -24,7 +25,7 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 ## 关键事实（已实测验证，Windows / macOS / Linux，WorkBuddy v5.3.x）
 
 - **登录态文件（明文 JSON）**：
-  `C:\Users\<user>\AppData\Local\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`
+  `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`
   （旧版可能在 `%APPDATA%` 同路径下；v5.3.8+ 为明文）
 - 文件内 `auth.accessToken`（JWT，`auth.tokenType=Bearer`）、`auth.domain`（实测值 `www.codebuddy.cn`）。
 - **接口域名**：以登录态里的 `auth.domain` 为准（实测为 `www.codebuddy.cn`）。注意：网上部分文章写 `copilot.tencent.com` 会 404，应以本机 `domain` 字段为准。
@@ -33,6 +34,18 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 - **领取签到**：`POST https://<domain>/v2/billing/meter/daily-checkin`
   - 成功：HTTP 200，`code:0`，返回 `credit` / `streak_days`（领取 100 积分）。
   - 已签到：HTTP 400，`code:10001`，`msg:"今天已签到，请明天再来"` —— **幂等，不会重复发**。
+
+### 派猫猫旅行（关键：域名不同、且无 `/v2` 前缀）
+
+- **旅行接口域名**：`https://www.workbuddy.cn`。**与签到域名不是同一个**，路径也**不带 `/v2` 前缀**；用签到域名或误加 `/v2` 一律 404。
+- **旅行状态（只读）**：`GET /activity/growth/buddy/travel/status`
+  - `data.state`：`idle` 空闲 / `traveling` 旅行中 / `arrived` 已到达待领取。
+  - 另有 `daily_limit_reached`（今日派遣是否达上限）、`reward_credit`、`location`、`arrive_at`、`server_now`。
+- **领取旅行积分**：`POST /activity/growth/buddy/travel/claim`（body `{}`）—— 仅 `arrived` 时可领。
+- **派出 Buddy**：`POST /activity/growth/buddy/travel/depart`（body `{"location_id": N}`）
+  - 仅 `idle` 且**未达每日上限**时派遣；地点 1-4（咖啡馆 / 商场店铺 / 健身房 / 古镇客栈），四个地点收益完全相同（随机 1-4 小时、5-10 积分），缺省随机。
+- **不会丢积分**：`arrived` 状态会一直保留，下次运行自动补领。
+- 接口仅需 Bearer Token，**无需** Turing Shield 设备指纹。
 
 完整字段、路径与错误码对照见 `@references/api-spec.md`。
 
@@ -46,18 +59,29 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 5. **输出 JSON 结果，全程不打印任何真实 token**（仅脱敏 `eyJhbG...xxxx`）。退出码：成功 0 / 失败 1。
 
 支持参数：
-- （无参数）查询今日状态 + 必要时领取
-- `--check-only` 仅查询状态（只读，不领取）
+- （无参数）签到 + 派猫猫旅行全自动闭环（**默认**）
+- `--no-travel` 只签到，跳过旅行（最快档）
+- `--check-only` 仅查询状态（只读，不领取、不写旅行）
+- `travel` 只查派猫猫旅行状态（只读，不签到）
+- `travel --travel-auto` 只跑旅行闭环（不签到）
+- `--travel-auto` 显式开启旅行闭环（默认已开，写出来只为明确表达）
+- `--location N` 指定派遣地点（1-4，缺省随机）
 - `--no-notify` 跳过全部推送与桌面通知（调试用）
 - `--diagnose` 环境自检（Python/登录态/网络/桌面会话/微信配置，只读）
 - `--init-config` 生成 `notify_config.json.example` 模板
 - `--version` / `--help`
+
+**派猫猫旅行闭环顺序（先领后派）**
+1. 查状态：`arrived` → 领取积分 → 重新查状态。
+2. 此时若为 `idle` 且 `daily_limit_reached` 为假 → 派出；已达上限 → 跳过并说明。
+3. 若 `traveling` → 不派遣，仅展示到达倒计时。
 
 能力要点：
 - **桌面通知（默认开启）**：每次执行后弹系统级 toast 展示结果与余额；受 `--no-notify` 抑制；无桌面会话时自动跳过，不影响签到。
 - **失败微信提醒（可选）**：`status!=ok` 时读取本地 `~/.workbuddy/scripts/notify_config.json`（若存在）推送失败提醒；配置缺失或通道异常则静默跳过。
 - **成功微信播报（可选，默认关闭）**：`notify_config.json` 中 `success_notify: true` 时，签到成功也会推送一条播报；默认 `false` 保持静默无打扰。
 - **积分余额展示**：从状态/领取响应中尽力提取「积分余额」（total_credit / balance / points_balance 等），写入结果 `balance` 字段并展示；接口未返回则自动跳过。
+- **派猫猫旅行（默认随签到执行）**：查状态 / 领旅行积分 / 派 Buddy 出门全自动闭环；**派出前必查 `daily_limit_reached`，达上限一个写请求都不发**；已到达不会丢积分。结果写入 `travel` 字段并拼进主消息与桌面通知；旅行接口不可用时静默降级，绝不改变签到结论。
 - **环境自检（--diagnose）**：只读自检上述五项，输出 JSON 报告，便于首次安装后确认环境就绪。
 
 ## 调用本 Skill 时的搭建流程（照做即可）
@@ -105,5 +129,8 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 
 - `code=10001` 是今日已签，非错误。
 - 404 一定是用了错误域名（脚本自动用本机 `auth.domain`）。
+- **旅行接口 404 先查两件事**：域名必须是 `www.workbuddy.cn`（不是登录态里的 `auth.domain`），且路径**不能带 `/v2`**。
+- 「今日派遣次数已用完」是正常的服务端每日限额，次日自动恢复，不是故障。
+- 旅行中无法提前召回：官方没有召回接口，只能等到达后自动领取。
 - 自动化没跑先查开机 / 客户端退出 / 联网。
 - 桌面通知不弹通常是无桌面会话（锁屏/无 GUI），属预期，stdout 与 checkin.log 仍有完整记录。
