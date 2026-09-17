@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "542ef11a-10cb-4c1c-a739-1ee4b746ba0f",
+  "path": "token-efficiency",
+  "path_key": "token-efficiency",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "skillssh",
+    "ref": "delphine-l/claude_global/token-efficiency",
+    "subpath": "skills/claude-meta/token-efficiency",
+    "branch": null
+  }
+}
