@@ -8,5 +8,6 @@
   "description_en": "AI-powered WeChat cover design tool based on daily viral article data. Analyzes visual patterns and generates high-conversion cover designs.",
   "iconSource": "https://openplatform-cdn.codebuddy.cn/public/9f40ec1e-e8c9-4dca-ace6-b634b3c73991/avatar/skill/au_0c11846a-79c.svg",
   "iconLocalPath": "/Users/kench/.workbuddy/skills/wechat-cover/_icon.svg",
-  "iconDownloadedFrom": "https://openplatform-cdn.codebuddy.cn/public/9f40ec1e-e8c9-4dca-ace6-b634b3c73991/avatar/skill/au_0c11846a-79c.svg"
+  "iconDownloadedFrom": "https://openplatform-cdn.codebuddy.cn/public/9f40ec1e-e8c9-4dca-ace6-b634b3c73991/avatar/skill/au_0c11846a-79c.svg",
+  "installedContentHash": "sha256:a12f88e95c59152141fc943d3be7c8b63f7213559a74f3f8e1cadad73474443d"
 }

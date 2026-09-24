@@ -18,5 +18,6 @@
   "description_en": "Manage and automate Obsidian vaults",
   "iconSource": "https://openplatform-cdn.codebuddy.cn/public/operation-platform/skill-icons/skill_2053082563940843521/9580e66c5a18e746.png",
   "iconLocalPath": "/Users/kench/.workbuddy/skills/obsidian/_icon.png",
-  "iconDownloadedFrom": "https://openplatform-cdn.codebuddy.cn/public/operation-platform/skill-icons/skill_2053082563940843521/9580e66c5a18e746.png"
+  "iconDownloadedFrom": "https://openplatform-cdn.codebuddy.cn/public/operation-platform/skill-icons/skill_2053082563940843521/9580e66c5a18e746.png",
+  "installedContentHash": "sha256:5f0c60d9c9eb787f5119aaad59a20679567db58ab299fdcb53be298e02118208"
 }

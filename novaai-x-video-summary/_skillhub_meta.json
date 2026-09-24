@@ -6,5 +6,6 @@
   "source": "skillhub",
   "namespace": "user_113322ce",
   "canonicalName": "@user_113322ce/novaai-x-video-summary",
-  "iconDownloadFailedAt": 1789632069246
+  "iconDownloadFailedAt": 1789632069246,
+  "installedContentHash": "sha256:616bb064b2187cfe6d1814b4487a51452eb617effd59dd038ec645921f407c5f"
 }

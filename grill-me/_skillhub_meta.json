@@ -6,5 +6,6 @@
   "source": "skillhub",
   "iconSource": "https://cloudcache.tencent-cloud.com/qcloud/ui/static/other_external_resource/a00e31c7-8d6a-4e65-84fc-16a177f95674.png",
   "iconLocalPath": "/Users/kench/.workbuddy/skills/grill-me-plus__skillhub/_icon.png",
-  "iconDownloadedFrom": "https://cloudcache.tencent-cloud.com/qcloud/ui/static/other_external_resource/a00e31c7-8d6a-4e65-84fc-16a177f95674.png"
+  "iconDownloadedFrom": "https://cloudcache.tencent-cloud.com/qcloud/ui/static/other_external_resource/a00e31c7-8d6a-4e65-84fc-16a177f95674.png",
+  "installedContentHash": "sha256:068bede2fda3bd432910a96b6ae649a9f5bf180f0a6e7a615dff28eaa96b3742"
 }

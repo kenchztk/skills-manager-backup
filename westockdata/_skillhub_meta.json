@@ -4,5 +4,6 @@
   "source": "marketplace",
   "version": "1.0.6",
   "skillId": "skill_2053083170922696704",
-  "skillName": "westockdata"
+  "skillName": "westockdata",
+  "installedContentHash": "sha256:58e3300c4be2d0e6d2648d32ae931cd89eaad0a2f65111f9e0cbcacbf6d8a5e7"
 }

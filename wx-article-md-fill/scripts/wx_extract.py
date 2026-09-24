@@ -59,7 +59,8 @@ def html_to_md(raw):
         if ds:
             img["src"] = ds
         img.attrs = {k: v for k, v in img.attrs.items() if k in ("src", "alt")}
-    md = md_conv(str(content), heading_style="ATX", strip=[], bullets="-")
+    md = md_conv(str(content), heading_style="ATX", strip=[], bullets="-",
+                 escape_underscores=False, escape_asterisks=False)
     md = re.sub(r"\n{3,}", "\n\n", md)
     md = re.sub(r"[ \t]+\n", "\n", md)
     return md.strip()
