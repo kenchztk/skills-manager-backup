@@ -1,6 +1,6 @@
 # WorkBuddy签到助手
 
-> **版本**：3.0.0
+> **版本**：3.1.2
 
 把 WorkBuddy「Buddy 加油站」每日签到、**派猫猫旅行**与**多渠道消息推送**做成**自动化**（WorkBuddy签到助手）：读取本机已登录的 WorkBuddy 登录态，直接调用官方接口完成领取与派遣，**无需点击 GUI、无需 OCR、无需第三方依赖**。
 
@@ -177,12 +177,35 @@ python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --diagnose
 | 检查项 | 说明 |
 |------|------|
 | `python` | 当前 Python 版本是否满足 ≥3.6 |
-| `auth` | 登录态文件是否存在、token 是否可用、是否已过期 |
+| `auth` | 登录态文件是否存在、token 是否可用（含 5.6.2+ 信封识别）、是否已过期 |
 | `network` | 能否解析签到域名 DNS（best-effort） |
 | `desktop` | 当前是否有桌面会话（影响通知能否弹出） |
 | `notify_config` | 推送配置是否存在、`ready`（已就绪渠道）/ `unconfigured`（缺配置渠道）各是哪些 |
 
 对照报告即可快速定位「为什么签不了」：例如 `auth.found=false` 说明没登录，`network.dns_ok=false` 说明网络不通，`auth.expired=true` 说明要重新登录客户端。
+
+### 离线算法自测（--self-test-atrest）【v3.1.0 新增】
+
+`--self-test-atrest` 可**不联网、不读登录态、不依赖客户端**地验证 5.6.2 信封解密算法是否正确：用随机密钥构造 AES-256-GCM 信封 → 加密 → 解密往返，并交叉用 `cryptography` 与内置纯 Python 实现互验；同时验证「篡改密文 / authTag / AAD 均被 GCM 拒绝」。全部通过才说明解密实现可信赖。
+
+```
+python scripts/workbuddy_checkin.py --self-test-atrest
+```
+
+## 客户端 5.6.2+ 登录态加密（AtRestEncryption）兼容【v3.1.0 新增】
+
+多名用户反馈「客户端被强行更新到 5.6.2 后，签到技能无法签到」。原因与解决办法：
+
+- **根因**：5.6.2 起客户端默认强制开启 AtRestEncryption，把登录态里的 `auth.accessToken` 从明文 JWT 改成 AES-256-GCM 信封（`{"$wbEncrypted":1,"envelope":"..."}`）。旧脚本（v3.0.0 及更早）直接把 `accessToken` 当明文 JWT 鉴权，导致失败。
+- **解决（本 v3.1.0）**：自动识别两种登录态——明文（旧版 / 加密关闭）直接当 JWT 用，完全向后兼容；信封（5.6.2+）则本地 AES-256-GCM 解密后再取出 JWT 签到。全程不打印真实 token。
+- **解密密钥（atRestSecretKey）获取方式**：该密钥**不落盘、只驻留在运行中的 WorkBuddy.exe 进程内存**（由客户端原生模块 `workbuddyStorage.loggerGet()` 运行时提供）。脚本按以下顺序定位：
+  1. 环境变量 `WORKBUDDY_ATREST_KEY` —— 直接给密钥串（推荐，尤其系统级定时任务 / 分享包）。
+  2. 环境变量 `WORKBUDDY_ATREST_KEY_FILE` —— 指向含明文密钥或 DPAPI blob 的文件。
+  3. 自动扫描登录态目录下的 DPAPI blob，按信封 `keyId` 校验匹配（无需硬编码路径）。
+  4. **扫描运行中 WorkBuddy.exe 进程内存（v3.1.1 新增）**：用 `ReadProcessMemory` 遍历客户端进程可读内存，定向搜索信封 `keyId` 的 ASCII 串，在命中点附近提取 44 字符 base64 候选并按 `keyId = SHA256(SHA256(密钥串))[:16]` 严格校验；无命中时再做全内存 base64 候选兜底扫描。**前提：客户端已启动并登录**，且脚本与客户端在同一 Windows 用户下运行。
+- **解密失败自动回退（3.1.1 增强）**：若以上方式都拿不到密钥（如客户端未运行、权限不足），脚本**不会直接报错退出**，而是自动回退到 WorkBuddy 代理自带的**明文兜底登录态** `~/.workbuddy/auth/workbuddy-desktop.info`（由 WorkBuddy 代理维护，通常为明文且有效），仍可正常签到与派遣。`--diagnose` 会逐个列出候选登录态的可用性与是否加密信封。
+- **AES 后端**：优先 `cryptography`，缺失回退 PyCryptodome，再缺失用内置纯 Python AES-256-GCM（已交叉对拍 + GCM 完整性校验）。
+- 信封格式、派生规则、AAD 构造等完整技术细节见 `@references/api-spec.md` 的「AtRestEncryption 信封格式」一节。
 
 ## 常见问题 FAQ
 
@@ -274,6 +297,7 @@ A：在新机器安装 Skill 并说「帮我设置 WorkBuddy 每日自动签到�
 | 渠道显示 `unconfigured` | 该渠道必填项缺失，非网络问题 |
 | `sms` 显示 `skipped` | 付费渠道未加 `--confirm-paid`，属预期保护 |
 | 推送失败但签到成功 | 属预期：推送与签到完全隔离，不影响退出码 |
+| 5.6.2+ 信封解密失败 / `atRestSecretKey` 找不到 | 密钥不落盘、只驻留运行中客户端内存：**先启动并登录 WorkBuddy 客户端**再跑脚本（自动 ReadProcessMemory 扫描进程内存，按 keyId 校验）；脚本与客户端需同一 Windows 用户；也可设置 `WORKBUDDY_ATREST_KEY`（直接给密钥串）或 `WORKBUDDY_ATREST_KEY_FILE` |
 
 ## 安全说明
 
@@ -294,3 +318,7 @@ A：在新机器安装 Skill 并说「帮我设置 WorkBuddy 每日自动签到�
 - **暂停每日自动签到**：在 WorkBuddy 的「自动化」列表里，把「WorkBuddy签到助手 · 每日自动签到」设为暂停（PAUSED）或删除即可，不影响脚本本身。
 - **卸载本 Skill**：直接删除技能目录 `~/.workbuddy/skills/totorosir-workbuddy-checkin/`（Windows 即 `%USERPROFILE%\.workbuddy\skills\totorosir-workbuddy-checkin\`）。脚本副本 `~/.workbuddy/scripts/workbuddy_checkin.py` 与 `push_message.py` 可一并删除，不影响其他功能（若还配了推送，`notify_config.json` 也可自行删除）。
 - **彻底停止并清理**：暂停自动化 + 删除技能目录 + 删除脚本副本，即完全移除本能力，无残留系统服务。
+
+## 关于作者
+
+本技能由 TOTORO（totorosir）开发维护；相关更新、用法答疑与实战笔记发布于公众号 龙猫科技说。

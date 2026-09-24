@@ -2,11 +2,11 @@
 name: totorosir-workbuddy-checkin
 display_name: WorkBuddy签到助手
 display_name_en: WorkBuddy Check-in Assistant
-description: WorkBuddy签到助手（WorkBuddy「Buddy 加油站」每日签到自动化 Skill，接口直签，无需点击 GUI，跨平台支持 Windows / macOS / Linux）。当用户说"每天自动签到 WorkBuddy / 每日签到 / 自动领 Buddy 加油站积分 / 自动领 100 积分 / 设置 WorkBuddy 每日签到 / WorkBuddy 打卡 / 自动打卡 WorkBuddy / 帮我签到一次 / 现在签个到 / 检查签到环境 / 派猫猫旅行 / 猫猫旅行 / 旅行积分 / 领旅行奖励 / Buddy 在旅行吗 / 还有多久回来 / 自动派猫猫 / 推送签到结果 / 签到通知发钉钉"时使用。原理是读取本机已登录 WorkBuddy 的登录态 accessToken，直接调用官方签到接口完成领取，并支持派猫猫旅行全自动闭环（先领后派）；支持桌面通知与 12 类渠道的多渠道消息推送（钉钉/飞书/企业微信/微信/邮件/短信/QQ/Slack/Telegram/Bark/通用 Webhook/系统通知），推送接口设计与配置项对齐 totorosir-push-message 技能。
-description_zh: 读取本机 WorkBuddy 登录态，直接调用官方接口完成「Buddy 加油站」每日签到（无需点击 GUI），并支持派猫猫旅行（查状态 / 领旅行积分 / 派 Buddy 出门，默认随签到跑全自动闭环）。支持桌面通知与 12 类多渠道消息推送（配置项/接口对齐 totorosir-push-message 技能），可设置每日 09:00 自动签到。
-description_en: Auto check-in to WorkBuddy Buddy Station using the local auth token via the official API (no GUI clicks), plus Buddy Travel support (query status, claim travel credits, dispatch Buddy; runs a claim-then-dispatch loop by default). Cross-platform, with desktop notification and 12-channel push (DingTalk/Feishu/WeCom/WeChat/Email/SMS/QQ/Slack/Telegram/Bark/Webhook/system) whose interface and config mirror the totorosir-push-message skill; supports a daily 09:00 automation.
+description: WorkBuddy签到助手（WorkBuddy「Buddy 加油站」每日签到自动化 Skill，接口直签，无需点击 GUI，跨平台支持 Windows / macOS / Linux）。当用户说"每天自动签到 WorkBuddy / 每日签到 / 自动领 Buddy 加油站积分 / 自动领 100 积分 / 设置 WorkBuddy 每日签到 / WorkBuddy 打卡 / 自动打卡 WorkBuddy / 帮我签到一次 / 现在签个到 / 检查签到环境 / 派猫猫旅行 / 猫猫旅行 / 旅行积分 / 领旅行奖励 / Buddy 在旅行吗 / 还有多久回来 / 自动派猫猫 / 推送签到结果 / 签到通知发钉钉 / 客户端被更新后签不了 / 5.6.2 签到失败 / 登录态加密了"时使用。原理是读取本机已登录 WorkBuddy 的登录态 accessToken，直接调用官方签到接口完成领取，并支持派猫猫旅行全自动闭环（先领后派）；支持桌面通知与 12 类渠道的多渠道消息推送（钉钉/飞书/企业微信/微信/邮件/短信/QQ/Slack/Telegram/Bark/通用 Webhook/系统通知），推送接口设计与配置项对齐 totorosir-push-message 技能。**v3.1.0 起兼容 WorkBuddy 客户端 5.6.2+ 的 AtRestEncryption**：登录态 accessToken 被 AES-256-GCM 信封加密时，脚本会自动解密再取出 JWT，解决"客户端更新到 5.6.2 后旧脚本无法签到"的问题。
+description_zh: 读取本机 WorkBuddy 登录态，直接调用官方接口完成「Buddy 加油站」每日签到（无需点击 GUI），并支持派猫猫旅行（查状态 / 领旅行积分 / 派 Buddy 出门，默认随签到跑全自动闭环）。支持桌面通知与 12 类多渠道消息推送（配置项/接口对齐 totorosir-push-message 技能），可设置每日 09:00 自动签到。v3.1.0 起兼容 5.6.2+ 客户端对登录态 accessToken 的 AtRestEncryption（AES-256-GCM 信封），自动解密后再签到，旧版明文登录态同样向后兼容。
+description_en: Auto check-in to WorkBuddy Buddy Station using the local auth token via the official API (no GUI clicks), plus Buddy Travel support (query status, claim travel credits, dispatch Buddy; runs a claim-then-dispatch loop by default). Cross-platform, with desktop notification and 12-channel push (DingTalk/Feishu/WeCom/WeChat/Email/SMS/QQ/Slack/Telegram/Bark/Webhook/system) whose interface and config mirror the totorosir-push-message skill; supports a daily 09:00 automation. Since v3.1.0 it also supports AtRestEncryption (AES-256-GCM envelope) used by WorkBuddy client 5.6.2+, so an encrypted login token is transparently decrypted before check-in; plaintext tokens from older clients remain backward compatible.
 category: 自动化
-version: 3.0.0
+version: 3.1.2
 author: totorosir
 agent_created: true
 ---
@@ -17,18 +17,18 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 
 本 Skill 自带脚本 `scripts/workbuddy_checkin.py`，仅用 Python 标准库（urllib/json/os/socket/subprocess），零第三方依赖。
 
-> 面向用户的完整说明（快速开始 / 桌面通知 / 消息推送配置 / 环境自检 / FAQ / 反模式 / 排错）见 `README.md`。
+> 面向用户的完整说明（快速开始 / 桌面通知 / 消息推送配置 / 环境自检 / FAQ / 反模式 / 排错）见 `@references/user-guide.md`。
 > 接口规范、登录态格式、字段与错误码、推送模块接口见 `@references/api-spec.md`。
 > 自动化提示词、命令示例与推送配置示例见 `@references/examples.md`。
 > 本文件只保留 Skill 元数据与代理执行所需关键信息，避免内容重复维护。
 
-## 关键事实（已实测验证，Windows / macOS / Linux，WorkBuddy v5.3.x）
+## 关键事实（Windows / macOS / Linux）
 
 - **登录态文件（明文 JSON）**：
   `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`
   （旧版可能在 `%APPDATA%` 同路径下；v5.3.8+ 为明文）
-- 文件内 `auth.accessToken`（JWT，`auth.tokenType=Bearer`）、`auth.domain`（实测值 `www.codebuddy.cn`）。
-- **接口域名**：以登录态里的 `auth.domain` 为准（实测为 `www.codebuddy.cn`）。注意：网上部分文章写 `copilot.tencent.com` 会 404，应以本机 `domain` 字段为准。
+- 文件内 `auth.accessToken`（JWT，`auth.tokenType=Bearer`）、`auth.domain`（示例值 `www.codebuddy.cn`）。
+- **接口域名**：以登录态里的 `auth.domain` 为准，切勿硬编码。注意：网上部分文章写 `copilot.tencent.com` 会 404，应以本机 `domain` 字段为准。
 - **状态查询（只读）**：`POST https://<domain>/v2/billing/meter/checkin-activity-status`
   返回 `{"code":0,"data":{"today_checked_in":true/false,"streak_days":N,"daily_credit":100,...}}`（data 中可能含 **`total_credits`**（复数）/ `balance` 等余额字段，脚本会自动提取并展示）
 - **领取签到**：`POST https://<domain>/v2/billing/meter/daily-checkin`
@@ -44,10 +44,44 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 - **领取旅行积分**：`POST /activity/growth/buddy/travel/claim`（body `{}`）—— 仅 `arrived` 时可领。
 - **派出 Buddy**：`POST /activity/growth/buddy/travel/depart`（body `{"location_id": N}`）
   - 仅 `idle` 且**未达每日上限**时派遣；地点 1-4（咖啡馆 / 商场店铺 / 健身房 / 古镇客栈），四个地点收益完全相同（随机 1-4 小时、5-10 积分），缺省随机。
+  - 若服务端返回「no active buddy」等提示，说明该账号尚未在客户端激活派猫猫旅行，属账号状态而非脚本故障。
 - **不会丢积分**：`arrived` 状态会一直保留，下次运行自动补领。
 - 接口仅需 Bearer Token，**无需** Turing Shield 设备指纹。
 
 完整字段、路径与错误码对照见 `@references/api-spec.md`。
+
+## 客户端 5.6.2+ 登录态加密（AtRestEncryption）兼容【v3.1.0 起】
+
+> 背景：客户端从 5.6.2 起强制开启登录态静态加密，旧脚本读到的 `accessToken` 不再是明文 JWT，导致签到失败。
+
+- **原因**：WorkBuddy 桌面客户端从 **5.6.2** 起把 `buildMode` 从 `disabled` 改为 `required`，强制开启 **AtRestEncryption**。登录态文件 `workbuddy-desktop.info` 里的 `auth.accessToken` 不再是明文 JWT，而是 AES-256-GCM 信封：
+  ```json
+  {"$wbEncrypted":1,"envelope":"<base64 信封>"}
+  ```
+  其中 `envelope`（suite=1）结构为 `{suite, keyId, nonce(base64), authTag(base64), ciphertext(base64)}`。旧版脚本（v3.0.0 及更早）直接把 `accessToken` 当明文 JWT 拿去鉴权，结果鉴权失败 → 无法签到。
+- **解决（v3.1.0 起）**：脚本自动识别两种登录态，二选一：
+  - **明文字符串**（5.5.x 及更早 / 加密未开启）→ 直接当 JWT 用，**完全向后兼容**，行为同 v3.0.0。
+  - **信封对象**（5.6.2+）→ 走 AES-256-GCM 解密，取出明文 JWT 再签到。
+  - 解密全在脚本内完成，全程不打印真实 token（仅脱敏 `eyJhbG...xxxx`）。
+- **密钥从哪来**：解密所需的 `atRestSecretKey`（44 字符规范 base64）**不落盘、只驻留运行中的 WorkBuddy.exe 进程内存**（由客户端原生模块运行时提供；同一把密钥也用于包裹 `~/.workbuddy/keyblob` 里的主密钥，因此该文件不能作为密钥的替代来源）。脚本按以下顺序定位：
+  1. 环境变量 `WORKBUDDY_ATREST_KEY` —— 直接给 44 字符密钥串（最省事，适合系统级定时任务 / 分享包）。
+  2. 环境变量 `WORKBUDDY_ATREST_KEY_FILE` —— 指向一个文件，里面是明文 44 字符密钥，或 DPAPI 密文 blob。
+  3. 自动扫描登录态所在 `Data` 目录下的 DPAPI blob，逐个解开并用信封里的 `keyId` 校验匹配（派生规则：`key = SHA256(atRestSecretKey 字符串)`, `keyId = SHA256(key).hex()[:16]`，兼容个别落盘情况）。
+  4. **扫描运行中 WorkBuddy.exe 进程内存（v3.1.1 起新增，主路径）**：用 `ReadProcessMemory` 遍历客户端进程可读内存，先定向搜索信封 `keyId` 的 ASCII / UTF-16LE 串，在命中点附近提取 44 字符 base64 候选并按派生规则严格校验；无论是否命中，都继续做全内存 base64 候选兜底扫描（ASCII 与 UTF-16LE，共用去重集合与数量上限）。要求：**客户端已启动并登录**，且脚本与客户端在同一 Windows 用户下运行（客户端提权运行而脚本未提权时系统会拒绝读取）。
+- **解密失败自动回退（v3.1.1 起）**：若以上方式都拿不到密钥（如客户端未运行、权限不足），脚本**不会直接报错退出**，而是自动回退到 WorkBuddy 代理自带的**明文兜底登录态** `~/.workbuddy/auth/workbuddy-desktop.info`（该文件由 WorkBuddy 代理维护，通常是明文且长期有效），从而仍能正常签到与派遣。可在 `--diagnose` 报告中看到每个候选登录态的「是否存在 / 是否加密信封 / 是否可用」，便于定位问题。
+- **AES 实现与后端**：主实现优先用 `cryptography`（AES-GCM）；缺失时回退 PyCryptodome；两者都缺失则用内置**纯 Python AES-256-GCM**（标准 S-Box + GHASH + CTR）。三层实现已交叉对拍，且 GCM 完整性校验严格（篡改密文 / authTag / AAD 均会被拒绝）。
+- **自测**：`python scripts/workbuddy_checkin.py --self-test-atrest` 可**离网、不读登录态、不依赖客户端**地验证 AES-GCM 加解密往返与纯 Python / 主实现互验（详见 `@references/api-spec.md` 的「AtRestEncryption 信封格式」一节）。
+
+## 版本说明
+
+| 版本 | 说明 |
+|---|---|
+| **3.1.2**（当前） | 修复 5.6.2+ 加密登录态下内存密钥定位可能误报失败的问题：全内存候选扫描不再被前置 keyId 命中门控，并补充 UTF-16LE 候选；改进密钥定位失败时的诊断计数与提示。 |
+| 3.1.1 | 新增运行中客户端进程内存密钥定位（主路径）；加密登录态解密失败时自动回退明文兜底登录态；`--diagnose` 逐个枚举候选登录态。 |
+| 3.1.0 | 新增 WorkBuddy 客户端 5.6.2+ AtRestEncryption（AES-256-GCM 信封）登录态兼容；新增 `--self-test-atrest` 离线自测。 |
+| 3.0.0 | 签到 + 派猫猫旅行闭环 + 12 渠道消息推送 + 桌面通知。 |
+
+版本号变更不影响调用方式与配置格式；升级只需替换技能目录（或重装技能包），登录态、`notify_config.json` 均无需改动。
 
 ## 自带脚本
 
@@ -57,7 +91,7 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 - `scripts/push_message.py` —— 多渠道消息推送模块（被主脚本按同目录导入，也可独立运行）
 
 ### 主脚本核心逻辑
-1. 在 `LOCALAPPDATA` / `APPDATA` / `~/Library/Application Support` / `~/.config`（及 `~/.workbuddy/auth` 兜底）定位 `workbuddy-desktop.info`，只读取出 `accessToken` 与 `domain`。
+1. 在 `LOCALAPPDATA` / `APPDATA` / `~/Library/Application Support` / `~/.config`（及 `~/.workbuddy/auth` 兜底）定位 `workbuddy-desktop.info`，只读取出 `accessToken` 与 `domain`；依次尝试所有候选登录态，加密态解密失败会自动跳到下一个可用来源。
 2. 调 `checkin-activity-status`：若 `data.today_checked_in==true` → 直接 `skip_already_signed` 退出（不发领取请求）。
 3. 否则调 `daily-checkin` 领取；响应 `code==10001` 或含"已签到" → 视为已签安全跳过；HTTP 200 且 `code==0` → 领取成功。
 4. 非 2xx 也解析响应体（避免把"已签到 400"误判为异常）。
@@ -75,6 +109,7 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 - `--confirm-paid` 允许发送付费渠道（短信）；缺省时付费渠道一律跳过
 - `--no-notify` 跳过全部推送与桌面通知（调试用）
 - `--diagnose` 环境自检（Python/登录态/网络/桌面会话/推送配置，只读）
+- `--self-test-atrest` 仅自测 5.6.2 信封解密算法（不联网、不读登录态、不依赖客户端）
 - `--init-config` 生成 `notify_config.json.example` 模板
 - `--version` / `--help`
 
@@ -163,7 +198,7 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 - 如需**系统级定时任务**（Windows 计划任务 / macOS launchd / Linux crontab，脱离 WorkBuddy 也能跑），请使用独立的「WorkBuddy 自动签到分享包」，与本 Skill 互不冲突、可并存。
 - 不要在网页版尝试签到（网页版无签到入口，仅 PC 客户端专属）。
 
-## 排错要点（详见 `README.md` 排错速查）
+## 排错要点（详见 `@references/user-guide.md` 排错速查）
 
 - `code=10001` 是今日已签，非错误。
 - 404 一定是用了错误域名（脚本自动用本机 `auth.domain`）。
@@ -173,5 +208,10 @@ WorkBuddy「Buddy 加油站」每日签到本质是一次带本地登录 Token �
 - **推送没发出**：先跑 `--diagnose` 看 `notify_config.ready` 是否列出你的渠道；`ready` 为空说明配置缺字段或文件路径不对（默认 `~/.workbuddy/scripts/notify_config.json`）。
 - **推送结果里某渠道 `unconfigured`**：该渠道必填项缺失，不是网络问题。
 - **`sms` 显示 `skipped`**：付费渠道未加 `--confirm-paid`，属预期保护。
+- **5.6.2+ 加密登录态解不开**：确保 WorkBuddy 客户端已启动并登录、脚本与客户端同一 Windows 用户；否则脚本会自动回退 `~/.workbuddy/auth` 明文兜底登录态。仍失败可用环境变量 `WORKBUDDY_ATREST_KEY` / `WORKBUDDY_ATREST_KEY_FILE` 显式指定密钥。
 - 自动化没跑先查开机 / 客户端退出 / 联网。
 - 桌面通知不弹通常是无桌面会话（锁屏/无 GUI），属预期，stdout 与 checkin.log 仍有完整记录。
+
+## 关于作者
+
+本技能由 TOTORO（totorosir）开发维护；相关更新、用法答疑与实战笔记发布于公众号 龙猫科技说。

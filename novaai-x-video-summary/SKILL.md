@@ -5,19 +5,16 @@ displayName: "X/Twitter 视频帖子总结与要点提炼"
 slug: novaai-x-video-summary
 name: novaai-x-video-summary
 description: "分析公开的X/Twitter 视频帖子并生成一句话摘要、内容概览、核心观点、关键细节和行动项。当用户提供X/Twitter视频链接并提出“总结这个视频、这个视频主要讲了什么、提炼视频的核心观点”等请求时使用。不用于只需要逐字字幕、账号资料、互动数据或视频生成的请求；链接不可访问或字幕缺失时如实报告，不补写内容。"
-version: 1.0.1
+version: 1.0.2
 metadata:
   openclaw:
     requires:
-      env:
-        - UNITYCLAW_KEY
       bins:
         - node
         - npm
-    primaryEnv: UNITYCLAW_KEY
     install:
       - kind: node
-        package: "fieldkit-sdk@1.0.1"
+        package: "fieldkit-sdk@2.0.1"
         bins: []
 ---
 # X/Twitter 视频帖子总结与要点提炼
@@ -45,15 +42,14 @@ metadata:
 
 ## 工作流
 
-1. 若运行环境提示缺少 `UNITYCLAW_KEY`，先引导用户前往下方「配置」中的链接获取 API 密钥，并说明配置完成后可重试；不要只报告缺少环境变量。
-2. 确认链接属于X/Twitter，且用户需要当前任务而非相邻任务。
-3. 使用 `--json` 和独立的 `--output-dir` 执行 `scripts/generate.js`，每个链接只请求一次。
-4. 仅在 `success` 为 `true`、`summary` 或 `subtitle` 至少一项非空且结果文件存在时继续。
-5. 读取服务返回的摘要和字幕，确认至少一项非空
-6. 识别主题、结论、关键论据和重要限定
-7. 压缩重复内容并区分原始陈述与解释
-8. 输出一句话摘要、内容概览、核心观点、关键细节和行动项
-9. 区分视频原始陈述和分析解释，不虚构说话人、时间戳、引文、指标或事实。
+1. 确认链接属于X/Twitter，且用户需要当前任务而非相邻任务。
+2. 使用 `--json` 和独立的 `--output-dir` 执行 `scripts/generate.js`，每个链接只请求一次。
+3. 仅在 `success` 为 `true`、`summary` 或 `subtitle` 至少一项非空且结果文件存在时继续。
+4. 读取服务返回的摘要和字幕，确认至少一项非空
+5. 识别主题、结论、关键论据和重要限定
+6. 压缩重复内容并区分原始陈述与解释
+7. 输出一句话摘要、内容概览、核心观点、关键细节和行动项
+8. 区分视频原始陈述和分析解释，不虚构说话人、时间戳、引文、指标或事实。
 
 ## 输出
 
@@ -72,25 +68,19 @@ metadata:
 - “这个视频主要讲了什么：https://x.com/<username>/status/<post_id>”
 - “提炼视频的核心观点：https://x.com/<username>/status/<post_id>”
 
-## 配置
+## OAuth 授权
 
-设置 `UNITYCLAW_KEY`，并精确安装 `fieldkit-sdk@1.0.1`。缺少密钥时，前往 `https://unityclaw.com?utm_source=novaai-x-video-summary` 获取；配置完成后重试。
+正常执行原任务。缺少凭据时，脚本返回 `AUTH_REQUIRED`（退出码 2），不要把它当作可重试的业务错误，也不要要求用户自行获取或粘贴 API Key。
 
-## API Key 使用方式
-
-用户在当前 Agent 会话中直接提供 Key 时，通过 `--api-key` 传入；它优先于 `UNITYCLAW_KEY`。下面只使用占位符，执行时不得在回复、日志或结果中展示真实 Key：
+向用户说明将打开 UnityClaw 授权页面，并询问是否同意。**只有用户明确同意后**，才运行：
 
 ```bash
-node scripts/generate.js --api-key "<用户在当前会话中提供的 Key>" --url "https://www.youtube.com/watch?v=..."
+node scripts/authorize.js --authorize --json
 ```
 
-未提供 `--api-key` 时，脚本自动读取 `UNITYCLAW_KEY`：
+授权命令只完成 OAuth 和凭据保存，不调用业务接口。成功后重新执行用户原来的业务命令一次；用户拒绝、取消、超时或授权失败时停止，不循环弹窗。不得回显、记录或写入凭据。
 
-```bash
-node scripts/generate.js --url "https://www.youtube.com/watch?v=..."
-```
-
-若两种来源都没有，引导用户前往 `https://unityclaw.com?utm_source=novaai-x-video-summary` 获取 API 密钥，并让用户选择直接提供或配置环境变量后重试。无论采用哪种密钥来源，都不得回显、记录、保存或把真实 Key 写入文件、表格和任务结果。
+如果旧凭据无效，不要直接 OAuth 后重试；先排查并清理旧凭据，否则它可能覆盖新授权结果。服务端业务失败不触发 OAuth。
 
 ## 参数
 

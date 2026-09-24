@@ -34,10 +34,96 @@
 ```
 
 - `auth.accessToken`：鉴权令牌（JWT）。**任何输出都不得打印真实值**，脚本仅脱敏为 `eyJhbG...xxxx`。
-- `auth.domain`：**接口域名以此为准**。实测值为 `www.codebuddy.cn`。网上文章写 `copilot.tencent.com` 会 404，切勿硬编码。
+- `auth.domain`：**接口域名以此为准**。示例值为 `www.codebuddy.cn`。网上文章写 `copilot.tencent.com` 会 404，切勿硬编码。
 - `auth.expiresAt`：过期时间（epoch 毫秒/秒）。脚本兼容 13 位毫秒与 10 位秒；为空则跳过过期检查。
 
 ---
+
+### 1.1 AtRestEncryption 信封格式（v3.1.0 新增）
+
+客户端 **5.6.2+** 默认强制开启 AtRestEncryption（`buildMode` 由 `disabled` 改为 `required`）。此时 `auth.accessToken` 不再是明文 JWT，而是 AES-256-GCM 信封：
+
+```json
+{
+  "auth": {
+    "accessToken": { "$wbEncrypted": 1, "envelope": "<base64 信封>" }
+  }
+}
+```
+
+明文登录态（`accessToken` 为字符串）仍被完全兼容，行为同 v3.0.0。
+
+#### 信封结构（suite=1）
+
+`envelope`（base64 解码后）是 JSON 对象：
+
+```json
+{
+  "suite": 1,
+  "keyId": "<16 位小写 hex>",
+  "nonce": "<base64, 12 字节>",
+  "authTag": "<base64, 16 字节>",
+  "ciphertext": "<base64>"
+}
+```
+
+- 包装层 `{"$wbEncrypted":1, "envelope":"..."}` 与内层 `suite=1` 信封是两个层级：外层是 `ProtectedFieldCodec` 的字段封装，内层是 `AtRestCrypto` 的加密信封。
+- `keyId` 由密钥派生（见下），用于确认解密所用密钥正确。
+
+#### 密钥派生（byte-accurate，复刻 `normalizeAtRestKeyPayload`）
+
+```
+atRestSecretKey = 44 字符规范 base64 字符串（解码得 32 字节种子）
+key   = SHA256( atRestSecretKey 的 UTF-8 字符串 )[:32]      # 32 字节 AES 密钥
+keyId = SHA256( key 的字节 )[:16]                           # 16 位小写 hex
+```
+
+#### AAD 构造（复刻 `buildAuthenticatedContextAad`，sym-v1 / framing=field）
+
+```
+AAD_DOMAIN = b"WB-AAD\x00"
+FRAMING_CODE = {"file":1,"field":2,"record":3,"stream":4}
+STANDARD_FORMAT_ID = {"file":"WBEF1","field":"WBEV1","record":"WBER1","stream":"WBES1"}
+
+encodeUint32(v)        = v 的 4 字节大端
+encodeLengthPrefixed(s) = 4 字节大端长度 + s 的 UTF-8 字节
+
+AAD = AAD_DOMAIN
+    + [1]                            # 版本
+    + encodeLengthPrefixed("WBEV1")   # 标准格式 id（field）
+    + encodeLengthPrefixed("sym-v1")  # 套件
+    + encodeUint32(1)                 # keyId 计数
+    + encodeLengthPrefixed(keyId)     # 16 位 hex 字符串
+    + [2]                            # framing = field
+    + [0]                            # sequence 缺失占位
+    + [0]                            # final 缺失占位
+```
+
+#### 加密 / 解密（AES-256-GCM）
+
+- 算法：AES-256-GCM，`nonce` 12 字节，`authTag` 16 字节（GCM 默认 tag 长度）。
+- **计数器偏移（易错点）**：数据块的计数器从 `inc32(J0)` 开始，即 `nonce || 0x00000002`（J0 = `nonce || 0x00000001` 仅用于给 tag 做 `E_K(J0)`）。数据块 `i`（从 1 起）的计数器为 `nonce || (i + 1)`。
+- 密文：`C_i = P_i XOR E_K(nonce || (i+1))`。
+- 标签：`T = S XOR E_K(J0)`，其中 `S = GHASH(AAD || 密文 || 长度块)`，长度块 = `len(AAD)*8`（8 字节大端）+ `len(密文)*8`（8 字节大端）。GHASH 以 `H = E_K(0^128)` 为基，标准 GF(2^128) 乘法（约减多项式 `x^128 + x^7 + x^2 + x + 1`）。
+- 解密时 GCM 完整性校验严格：密文 / authTag / AAD 任一被篡改都会被拒绝。
+
+#### 解密密钥（atRestSecretKey）获取
+
+**结论**：该密钥（44 字符规范 base64）**不存在于任何文件**，由定制版 Electron 的原生模块 `workbuddyStorage.loggerGet()` 在运行时提供，只驻留在**运行中的 WorkBuddy.exe 进程内存**；同一把密钥既直接加密 `auth` 字段，也用于包裹 `~/.workbuddy/keyblob` 里的主密钥。脚本按以下顺序定位：
+
+1. 环境变量 `WORKBUDDY_ATREST_KEY` —— 直接给 44 字符密钥串（最省事，推荐）。
+2. 环境变量 `WORKBUDDY_ATREST_KEY_FILE` —— 指向含明文密钥或 DPAPI blob 的文件。
+3. 自动扫描登录态所在 `Data` 目录下的 DPAPI blob（特征头 `01 00 00 00 d0 8c 9d 0a`），逐个 `CryptUnprotectData` 解开，用信封 `keyId` 校验派生匹配（兼容个别版本落盘 DPAPI 密钥的情况）。
+4. **扫描运行中 WorkBuddy.exe 进程内存（主路径）**：
+   - 用 `CreateToolhelp32Snapshot` 枚举进程，匹配 `WorkBuddy.exe`（可用环境变量 `WORKBUDDY_PROCESS_NAMES` 追加进程名，逗号分隔）。
+   - `OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ)` 后用 `VirtualQueryEx` 遍历可读已提交内存段（跳过 `PAGE_NOACCESS` / `PAGE_GUARD`），`ReadProcessMemory` 分块读取（总量上限约 3 GB）。
+   - **Pass 1（定向）**：搜索信封 `keyId` 的 16 位小写 hex ASCII 串，在命中点 ±4KB 窗口内提取 44 字符 base64 候选（`[A-Za-z0-9+/]{43}=`），按 `key = SHA256(候选串)`, `keyId = SHA256(key)[:16]` 严格校验。
+   - **Pass 2（兜底，仅当 Pass 1 无任何 keyId 命中）**：全内存扫描 base64 候选逐个校验（去重，候选数上限 20 万）。
+   - 前提与限制：客户端须**已启动并登录**；脚本与客户端须在同一 Windows 用户下运行（客户端提权而脚本未提权时 OpenProcess 会被拒绝）；密钥仅在内存中校验使用，**绝不写盘、绝不打印**。
+
+#### AES 后端优先级
+
+主实现优先 `cryptography`（`AES-GCM`）；缺失回退 PyCryptodome；两者都缺失则使用内置**纯 Python AES-256-GCM**（标准 S-Box + GF(2^128) GHASH + CTR）。三层实现已交叉对拍，且 `cryptography` 与纯 Python 互验一致；运行 `python scripts/workbuddy_checkin.py --self-test-atrest` 可离网验证。
 
 ## 2. 签到接口
 
@@ -65,7 +151,7 @@ Content-Type: application/json
 }
 ```
 
-> 实测余额字段是 **`total_credits`（复数）**；早期脚本只认单数 `total_credit`，导致 `balance` 恒为 `null`。详见第 5 节候选名清单。
+> 余额字段是 **`total_credits`（复数）**；早期脚本只认单数 `total_credit`，导致 `balance` 恒为 `null`。详见第 5 节候选名清单。
 
 已签到的判定（脚本兼容多种形态）：
 - `today_checked_in == true`
@@ -174,7 +260,7 @@ GET /activity/growth/buddy/travel/config
 ```
 
 返回 `data.locations`（`id` / `name` / `duration_hours_min` / `duration_hours_max` / `reward_credit_min` / `reward_credit_max`）。
-实测四个地点为**咖啡馆 / 商场店铺 / 健身房 / 古镇客栈**，时长与积分区间完全相同（随机 1-4 小时、5-10 积分），**收益无差异**，`location_id` 缺省时随机选一个。
+四个地点为**咖啡馆 / 商场店铺 / 健身房 / 古镇客栈**，时长与积分区间完全相同（随机 1-4 小时、5-10 积分），**收益无差异**，`location_id` 缺省时随机选一个。
 
 ### 3.5 派遣前置检查（硬规则）
 
@@ -208,7 +294,7 @@ GET /activity/growth/buddy/travel/config
 
 不同版本接口返回的余额字段名不统一，脚本按以下候选名 + 嵌套层级兜底提取，写入结果 `balance` 字段（找不到则返回 None，不影响签到）：
 
-- 候选键（**注意复数形态**，接口实测返回的是 `total_credits`（复数），早期版本脚本只认单数导致余额恒为空）：
+- 候选键（**注意复数形态**，接口返回的是 `total_credits`（复数），早期版本脚本只认单数导致余额恒为空）：
   `total_credits` / `total_credit` / `total_credit_balance` / `credits` / `total_points` / `points_balance` /
   `credit_balance` / `balance` / `remain_credit` / `remain_credits` / `remain` / `score` / `integral` /
   `totalCredits` / `totalCredit` / `pointsBalance` / `balanceCredit`

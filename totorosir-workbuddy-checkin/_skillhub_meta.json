@@ -1,11 +1,11 @@
 {
   "slug": "totorosir-workbuddy-checkin",
   "name": "WorkBuddy签到助手",
-  "version": "3.0.0",
-  "installedAt": 1789636201659,
+  "version": "3.1.2",
+  "installedAt": 1790144544296,
   "source": "skillhub",
   "iconSource": "https://skillhub-1388575217.cos.accelerate.myqcloud.com/skill-icons/uploads/640481/2e2d9190ae1446b4a153d152f971797b.png",
   "iconLocalPath": "/Users/kench/.workbuddy/skills/totorosir-workbuddy-checkin__skillhub/_icon.png",
   "iconDownloadedFrom": "https://skillhub-1388575217.cos.accelerate.myqcloud.com/skill-icons/uploads/640481/2e2d9190ae1446b4a153d152f971797b.png",
-  "installedContentHash": "sha256:e56ddfec1ae37448788475bde62ba242d2188dbbe2b32832e2e03e47f05feadd"
+  "installedContentHash": "sha256:f20941631c51a14d2ae29fbb3b2042d9c1531404e43dd6742d007ec2175d43a0"
 }

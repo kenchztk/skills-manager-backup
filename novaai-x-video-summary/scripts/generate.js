@@ -6,8 +6,8 @@ import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
 
-const SKILL_VERSION = '1.2.5';
-const REQUIRED_SDK_VERSION = '1.0.1';
+const SKILL_VERSION = '1.0.2';
+const REQUIRED_SDK_VERSION = '2.0.1';
 const DEFAULT_TIMEOUT_MS = 900000;
 const DEFAULT_RETRIES = 1;
 
@@ -20,7 +20,6 @@ Usage:
   node scripts/generate.js --url "https://www.douyin.com/video/..." --json --output-dir ./tasks
 
 Parameters:
-  --api-key          API Key supplied in the current Agent session; overrides UNITYCLAW_KEY
   --url, -u       HTTP(S) media URL to analyze (required)
   --output-dir    Task output directory (default: "./tasks")
   --timeout       Request timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS})
@@ -100,17 +99,10 @@ function emitFailure({ json, code, message, retryable = false, attempts = 0, out
   process.exitCode = 1;
 }
 
-function resolveApiKey(explicitApiKey, environment = process.env) {
-  const directKey = String(explicitApiKey ?? '').trim();
-  if (directKey) return directKey;
-  return String(environment.UNITYCLAW_KEY ?? '').trim();
-}
-
 async function main() {
   let values;
   try {
     ({ values } = parseArgs({ options: {
-      'api-key': { type: 'string', default: '' },
       url: { type: 'string', short: 'u', default: '' },
       'output-dir': { type: 'string', default: './tasks' },
       timeout: { type: 'string', default: String(DEFAULT_TIMEOUT_MS) },
@@ -125,7 +117,6 @@ async function main() {
   if (values.help) { printHelp(); return; }
 
   const json = values.json;
-  const explicitApiKey = values['api-key'].trim();
   const rawOutputDir = values['output-dir'].trim();
   let sourceUrl;
   let timeout;
@@ -149,16 +140,10 @@ async function main() {
     emitFailure({ json, code: 'OUTPUT_DIR_ERROR', message: `Cannot create output directory ${outputDir}: ${error.message}`, outputDir });
     return;
   }
-  const apiKey = resolveApiKey(explicitApiKey);
-  if (!apiKey) {
-    emitFailure({ json, code: 'MISSING_API_KEY', message: 'No API key was provided. Pass --api-key with a Key supplied in the current Agent session, or set UNITYCLAW_KEY. Get an API key at https://unityclaw.com?utm_source=novaai-x-video-summary, then retry.', outputDir });
-    return;
-  }
-
   let UnityClawClient;
   let SDK_VERSION;
   try { ({ UnityClawClient, SDK_VERSION } = await import('fieldkit-sdk')); } catch {
-    emitFailure({ json, code: 'SDK_NOT_FOUND', message: 'fieldkit-sdk is not installed. Run: npm install fieldkit-sdk@1.0.1', outputDir });
+    emitFailure({ json, code: 'SDK_NOT_FOUND', message: 'fieldkit-sdk is not installed. Run: npm install fieldkit-sdk@2.0.1', outputDir });
     return;
   }
   if (SDK_VERSION !== REQUIRED_SDK_VERSION) {
@@ -172,7 +157,18 @@ async function main() {
     console.log(`URL: ${sourceUrl}\nPlatform: ${platform}\nOutput Directory: ${outputDir}\n`);
   }
 
-  const client = new UnityClawClient({ apiKey, taskDir: outputDir, timeout, source: "novaai-x-video-summary" });
+  // OAuth-first SDK client: a missing Key is reported, never authorized here.
+  let client;
+  try {
+    client = new UnityClawClient({ taskDir: outputDir, timeout, source: "novaai-x-video-summary" });
+  } catch (error) {
+    if (error?.code === 'AUTH_REQUIRED') {
+      emitFailure({ json, code: 'AUTH_REQUIRED', message: 'Authorization required. Ask the user for consent before running node scripts/authorize.js --authorize.', outputDir });
+      process.exitCode = 2;
+      return;
+    }
+    throw error;
+  }
   let lastResult;
   let lastError;
   const maximumAttempts = retries + 1;

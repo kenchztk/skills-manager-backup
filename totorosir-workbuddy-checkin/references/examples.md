@@ -70,7 +70,7 @@ python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --init-config    
 python "%USERPROFILE%/.workbuddy/scripts/workbuddy_checkin.py" --version        # 显示版本
 ```
 
-### 真实输出片段（已实测）
+### 真实输出片段
 
 `travel`（只读查状态）：
 

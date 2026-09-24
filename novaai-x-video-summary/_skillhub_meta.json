@@ -1,11 +1,11 @@
 {
   "slug": "novaai-x-video-summary",
   "name": "X/Twitter 视频帖子总结与要点提炼",
-  "version": "1.0.1",
-  "installedAt": 1788311025910,
+  "version": "1.0.2",
+  "installedAt": 1789713008794,
   "source": "skillhub",
   "namespace": "user_113322ce",
   "canonicalName": "@user_113322ce/novaai-x-video-summary",
-  "iconDownloadFailedAt": 1789632069246,
-  "installedContentHash": "sha256:616bb064b2187cfe6d1814b4487a51452eb617effd59dd038ec645921f407c5f"
+  "iconDownloadFailedAt": 1789893382389,
+  "installedContentHash": "sha256:6a0122d75f2fc1c64332f0bc5062928c739aff224c0d667590ef29738a5d1c6d"
 }
