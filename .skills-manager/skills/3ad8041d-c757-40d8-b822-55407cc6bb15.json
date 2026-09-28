@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_id": "3ad8041d-c757-40d8-b822-55407cc6bb15",
+  "path": "traework-daily-checkin",
+  "path_key": "traework-daily-checkin",
+  "enabled": true,
+  "tags": [],
+  "source": {
+    "type": "import",
+    "ref": null,
+    "subpath": null,
+    "branch": null
+  }
+}
